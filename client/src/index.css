@@ -1,0 +1,161 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    color-scheme: light;
+  }
+
+  html {
+    scroll-behavior: smooth;
+  }
+
+  body {
+    @apply bg-sand-50 text-night antialiased;
+    background-image:
+      radial-gradient(circle at 12% 8%, rgba(201, 162, 39, 0.12), transparent 32%),
+      radial-gradient(circle at 88% 0%, rgba(15, 61, 46, 0.1), transparent 30%);
+  }
+
+  ::selection {
+    @apply bg-gold/30 text-night;
+  }
+
+  h1,
+  h2,
+  h3 {
+    text-wrap: balance;
+  }
+
+  input,
+  textarea,
+  select,
+  button {
+    font: inherit;
+  }
+
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: #f8efd9;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background: #cf8c3f;
+    border-radius: 999px;
+  }
+}
+
+@layer components {
+  .container-page {
+    @apply mx-auto w-full max-w-7xl px-4 sm:px-6 lg:px-8;
+  }
+
+  .pattern-surface {
+    background-image: radial-gradient(
+      circle at 1px 1px,
+      rgba(201, 162, 39, 0.22) 1px,
+      transparent 0
+    );
+    background-size: 22px 22px;
+  }
+
+  .card-surface {
+    @apply rounded-3xl border border-sand-200/80 bg-white/90 shadow-soft backdrop-blur-sm;
+  }
+
+  .field-label {
+    @apply mb-2 block text-sm font-semibold text-emerald-deep;
+  }
+
+  .field-control {
+    @apply w-full rounded-2xl border border-sand-200 bg-white px-4 py-3 text-sm text-night shadow-sm outline-none transition placeholder:text-night/35 focus:border-emerald-deep focus:ring-4 focus:ring-emerald-deep/10 disabled:cursor-not-allowed disabled:bg-sand-100;
+  }
+
+  .field-error {
+    @apply mt-1.5 text-xs font-semibold text-red-600;
+  }
+
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 rounded-full px-5 py-3 text-sm font-bold transition focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-gold/30 disabled:cursor-not-allowed disabled:opacity-60;
+  }
+
+  .btn-primary {
+    @apply btn bg-emerald-deep text-white shadow-lg shadow-emerald-deep/20 hover:bg-[#0b3125];
+  }
+
+  .btn-secondary {
+    @apply btn border border-emerald-deep/15 bg-white text-emerald-deep hover:border-emerald-deep/40 hover:bg-sand-50;
+  }
+
+  .btn-gold {
+    @apply btn bg-gold text-night shadow-lg shadow-gold/25 hover:bg-[#b8931f];
+  }
+
+  .btn-ghost {
+    @apply btn text-emerald-deep hover:bg-emerald-deep/5;
+  }
+
+  .section-kicker {
+    @apply text-sm font-bold uppercase tracking-[0.25em] text-gold;
+  }
+
+  .section-title {
+    @apply font-display text-3xl font-bold leading-tight text-emerald-deep sm:text-4xl;
+  }
+
+  .status-dot {
+    @apply inline-block h-2.5 w-2.5 rounded-full;
+  }
+}
+
+@layer utilities {
+  .text-shadow {
+    text-shadow: 0 2px 20px rgba(0, 0, 0, 0.35);
+  }
+
+  .animate-rise {
+    animation: rise 0.55s ease-out both;
+  }
+
+  .animate-fade {
+    animation: fade 0.35s ease-out both;
+  }
+
+  .animate-drawer {
+    animation: drawer 0.32s cubic-bezier(0.22, 1, 0.36, 1) both;
+  }
+}
+
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(18px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes drawer {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(0);
+  }
+}

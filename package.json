@@ -1,0 +1,26 @@
+{
+  "name": "hadramout-house-of-mandi",
+  "version": "1.0.0",
+  "private": true,
+  "description": "حضرموت بيت المندي - Full Stack Restaurant Platform",
+  "workspaces": [
+    "server",
+    "client"
+  ],
+  "scripts": {
+    "dev": "concurrently -n server,client -c yellow,cyan \"npm:dev:server\" \"npm:dev:client\"",
+    "dev:server": "npm run dev -w @hadramout/server",
+    "dev:client": "npm run dev -w @hadramout/client",
+    "build": "npm run build -w @hadramout/server && npm run build -w @hadramout/client",
+    "typecheck": "npm run typecheck -w @hadramout/server && npm run typecheck -w @hadramout/client",
+    "start": "npm run start -w @hadramout/server",
+    "db:init": "npm run db:init -w @hadramout/server",
+    "db:seed": "npm run db:seed -w @hadramout/server"
+  },
+  "devDependencies": {
+    "concurrently": "^10.0.6"
+  },
+  "engines": {
+    "node": ">=20.19.0"
+  }
+}
