@@ -33,3 +33,8 @@ export const toNumber = (value: unknown): number => {
 
 export const roundMoney = (value: number): number =>
   Math.round((value + Number.EPSILON) * 100) / 100;
+
+export const toNullableIsoString = (value: unknown): string | null => {
+  if (value === null || value === undefined) return null;
+  return toIsoString(value);
+};

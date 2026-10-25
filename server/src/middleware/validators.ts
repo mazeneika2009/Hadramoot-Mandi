@@ -112,6 +112,23 @@ export const orderStatusRules = [
     .withMessage('حالة الطلب غير صالحة'),
 ];
 
+export const dispatchOrderRules = [
+  param('id').isInt({ min: 1 }).withMessage('معرّف الطلب غير صالح').toInt(),
+  body('deliveryUserId')
+    .isInt({ min: 1 })
+    .withMessage('يجب اختيار مندوب توصيل صالح')
+    .toInt(),
+];
+
+export const confirmDeliveryRules = [
+  param('id').isInt({ min: 1 }).withMessage('معرّف الطلب غير صالح').toInt(),
+  body('cashReceived')
+    .optional({ values: 'null' })
+    .isFloat({ min: 0, max: 1000000 })
+    .withMessage('المبلغ المستلم غير صالح')
+    .toFloat(),
+];
+
 export const reservationRules = [
   body('name')
     .trim()

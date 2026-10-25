@@ -57,7 +57,9 @@ export const authService = {
 
     // Staff accounts must be approved by an administrator before they can log in.
     if (
-      (user.role === 'kitchen' || user.role === 'cashier') &&
+      (user.role === 'kitchen' ||
+        user.role === 'cashier' ||
+        user.role === 'delivery') &&
       !user.isApproved
     ) {
       throw ApiError.forbidden(

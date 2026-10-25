@@ -13,7 +13,8 @@ const isRole = (value: unknown): value is Role =>
   value === 'customer' ||
   value === 'admin' ||
   value === 'kitchen' ||
-  value === 'cashier';
+  value === 'cashier' ||
+  value === 'delivery';
 
 export const signToken = (user: AuthUser): string => {
   const options: SignOptions = {

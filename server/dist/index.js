@@ -216,6 +216,10 @@ var env = {
     cashier: {
       email: readString("CASHIER_EMAIL", "cashier@hadramout.com"),
       password: readString("CASHIER_PASSWORD", "secure_cashier_pass")
+    },
+    delivery: {
+      email: readString("DELIVERY_EMAIL", "delivery@hadramout.com"),
+      password: readString("DELIVERY_PASSWORD", "secure_delivery_pass")
     }
   },
   rateLimit: {
@@ -436,6 +440,10 @@ var toNumber = (value) => {
   return Number.isFinite(parsed) ? parsed : 0;
 };
 var roundMoney = (value) => Math.round((value + Number.EPSILON) * 100) / 100;
+var toNullableIsoString = (value) => {
+  if (value === null || value === void 0) return null;
+  return toIsoString(value);
+};
 
 // src/repositories/menuRepository.ts
 var mapMenuItem = (row) => ({
@@ -584,6 +592,13 @@ var mapOrder = (row) => ({
   paymentUrl: row.payment_url,
   notes: row.notes,
   paymentMethod: row.payment_method,
+  deliveryUserId: row.delivery_user_id === null ? null : Number(row.delivery_user_id),
+  deliveryUserName: row.delivery_user_name ?? null,
+  deliveryUserPhone: row.delivery_user_phone ?? null,
+  dispatchedAt: toNullableIsoString(row.dispatched_at),
+  deliveredAt: toNullableIsoString(row.delivered_at),
+  cashReceived: row.cash_received === null ? null : toNumber(row.cash_received),
+  cashChange: row.cash_change === null ? null : toNumber(row.cash_change),
   createdAt: toIsoString(row.created_at),
   updatedAt: toIsoString(row.updated_at)
 });
@@ -623,21 +638,33 @@ var toOrderDto = (order, items) => ({
   items: items.map(toOrderItemDto),
   createdAt: order.createdAt,
   updatedAt: order.updatedAt,
-  paymentMethod: order.paymentMethod
+  paymentMethod: order.paymentMethod,
+  deliveryUserId: order.deliveryUserId,
+  deliveryUserName: order.deliveryUserName ?? null,
+  deliveryUserPhone: order.deliveryUserPhone ?? null,
+  dispatchedAt: order.dispatchedAt,
+  deliveredAt: order.deliveredAt,
+  cashReceived: order.cashReceived,
+  cashChange: order.cashChange
 });
 var orderSelect = `o.id, o.user_id, o.total_amount, o.delivery_address,
   o.payment_status, o.order_status, o.payment_id, o.payment_url, o.notes,
-  o.created_at, o.updated_at`;
+  o.payment_method, o.delivery_user_id, o.dispatched_at, o.delivered_at,
+  o.cash_received, o.cash_change, o.created_at, o.updated_at`;
 var customerSelect = `u.name AS customer_name, u.email AS customer_email,
   u.phone AS customer_phone`;
+var deliverySelect = `d.name AS delivery_user_name,
+  d.phone AS delivery_user_phone`;
+var orderJoins = `JOIN users u ON u.id = o.user_id
+  LEFT JOIN users d ON d.id = o.delivery_user_id`;
 var itemSelect = `oi.id, oi.order_id, oi.menu_item_id, oi.quantity,
   oi.price_at_purchase, mi.name, mi.name_en, mi.image_url`;
 var orderRepository = {
   async findById(id, client = pool) {
     const rows = await queryRows(
       client,
-      `SELECT ${orderSelect}, ${customerSelect}
-       FROM orders o JOIN users u ON u.id = o.user_id
+      `SELECT ${orderSelect}, ${customerSelect}, ${deliverySelect}
+       FROM orders o ${orderJoins}
        WHERE o.id = ? LIMIT 1`,
       [id]
     );
@@ -646,8 +673,8 @@ var orderRepository = {
   async findByPaymentId(paymentId, client = pool) {
     const rows = await queryRows(
       client,
-      `SELECT ${orderSelect}, ${customerSelect}
-       FROM orders o JOIN users u ON u.id = o.user_id
+      `SELECT ${orderSelect}, ${customerSelect}, ${deliverySelect}
+       FROM orders o ${orderJoins}
        WHERE o.payment_id = ? LIMIT 1`,
       [paymentId]
     );
@@ -659,6 +686,10 @@ var orderRepository = {
     if (filters.userId !== void 0) {
       conditions.push("o.user_id = ?");
       params.push(filters.userId);
+    }
+    if (filters.deliveryUserId !== void 0) {
+      conditions.push("o.delivery_user_id = ?");
+      params.push(filters.deliveryUserId);
     }
     if (filters.status) {
       if (Array.isArray(filters.status)) {
@@ -682,8 +713,8 @@ var orderRepository = {
     );
     const rows = await queryRows(
       client,
-      `SELECT ${orderSelect}, ${customerSelect}
-       FROM orders o JOIN users u ON u.id = o.user_id
+      `SELECT ${orderSelect}, ${customerSelect}, ${deliverySelect}
+       FROM orders o ${orderJoins}
        ${where}
        ORDER BY o.created_at DESC
        LIMIT ? OFFSET ?`,
@@ -761,6 +792,45 @@ var orderRepository = {
       [orderStatus, orderId]
     );
   },
+  /**
+   * Assigns a ready order to a driver and dispatches it in one atomic step.
+   * The status predicate prevents two cashiers from dispatching the same
+   * order concurrently.
+   */
+  async dispatchToDriver(orderId, deliveryUserId, client = pool) {
+    const result = await executeStatement(
+      client,
+      `UPDATE orders
+          SET delivery_user_id = ?,
+              order_status = 'OUT_FOR_DELIVERY',
+              dispatched_at = NOW(),
+              delivered_at = NULL,
+              cash_received = NULL,
+              cash_change = NULL
+        WHERE id = ? AND order_status = 'READY'`,
+      [deliveryUserId, orderId]
+    );
+    return result.affectedRows > 0;
+  },
+  /**
+   * Completes a dispatched order, records the cash handover and marks the
+   * payment as paid. The status predicate makes confirmation idempotent-safe:
+   * a second request cannot overwrite the recorded delivery.
+   */
+  async completeDelivery(orderId, cashReceived, cashChange, client = pool) {
+    const result = await executeStatement(
+      client,
+      `UPDATE orders
+          SET order_status = 'DELIVERED',
+              payment_status = 'PAID',
+              delivered_at = NOW(),
+              cash_received = ?,
+              cash_change = ?
+        WHERE id = ? AND order_status = 'OUT_FOR_DELIVERY'`,
+      [cashReceived, cashChange, orderId]
+    );
+    return result.affectedRows > 0;
+  },
   async getStats(client = pool) {
     const rows = await queryRows(
       client,
@@ -797,10 +867,6 @@ var orderRepository = {
   }
 };
 
-// src/services/paymentService.ts
-var import_axios = __toESM(require("axios"));
-var import_node_crypto = __toESM(require("crypto"));
-
 // src/repositories/userRepository.ts
 var mapUser = (row) => ({
   id: Number(row.id),
@@ -810,7 +876,7 @@ var mapUser = (row) => ({
   phone: row.phone,
   role: row.role,
   createdAt: toIsoString(row.created_at),
-  isApproved: row.is_approved
+  isApproved: Boolean(row.is_approved)
 });
 var toUserDto = (user) => ({
   id: user.id,
@@ -838,6 +904,17 @@ var userRepository = {
       [id]
     );
     return rows[0] ? mapUser(rows[0]) : null;
+  },
+  async listApprovedByRole(role, client = pool) {
+    const rows = await queryRows(
+      client,
+      `SELECT ${selectColumns2}
+         FROM users
+        WHERE role = ? AND is_approved = TRUE
+        ORDER BY name ASC, id ASC`,
+      [role]
+    );
+    return rows.map(mapUser);
   },
   async isApproved(id, client = pool) {
     const rows = await queryRows(
@@ -874,6 +951,8 @@ var userRepository = {
 };
 
 // src/services/paymentService.ts
+var import_axios = __toESM(require("axios"));
+var import_node_crypto = __toESM(require("crypto"));
 var asRecord = (value) => typeof value === "object" && value !== null && !Array.isArray(value) ? value : {};
 var readString2 = (value) => {
   if (typeof value === "string") return value;
@@ -1239,15 +1318,37 @@ var orderService = {
   async getById(orderId, user) {
     const order = await orderRepository.findById(orderId);
     if (!order) throw ApiError.notFound("\u0627\u0644\u0637\u0644\u0628 \u063A\u064A\u0631 \u0645\u0648\u062C\u0648\u062F");
-    if (user.role !== "admin" && order.userId !== user.id) {
+    const canView = user.role === "admin" || order.userId === user.id || user.role === "delivery" && order.deliveryUserId === user.id;
+    if (!canView) {
       throw ApiError.forbidden("\u0644\u0627 \u064A\u0645\u0643\u0646\u0643 \u0639\u0631\u0636 \u0637\u0644\u0628 \u0644\u0627 \u064A\u062E\u0635\u0643");
     }
     const items = await orderRepository.findItemsByOrderId(orderId);
     return toOrderDto(order, items);
   },
-  async updateStatus(orderId, status) {
+  async updateStatus(orderId, status, actor) {
     const order = await orderRepository.findById(orderId);
     if (!order) throw ApiError.notFound("\u0627\u0644\u0637\u0644\u0628 \u063A\u064A\u0631 \u0645\u0648\u062C\u0648\u062F");
+    if (order.orderStatus === "DELIVERED" || order.orderStatus === "CANCELLED") {
+      throw ApiError.conflict("\u0644\u0627 \u064A\u0645\u0643\u0646 \u062A\u0639\u062F\u064A\u0644 \u0637\u0644\u0628 \u0645\u0643\u062A\u0645\u0644 \u0623\u0648 \u0645\u0644\u063A\u064A");
+    }
+    if (actor.role === "kitchen") {
+      if (status === "PREPARING" && order.orderStatus === "PENDING") {
+      } else if (status === "READY" && (order.orderStatus === "PENDING" || order.orderStatus === "PREPARING")) {
+      } else {
+        throw ApiError.forbidden(
+          '\u064A\u0645\u0643\u0646 \u0644\u0644\u0645\u0637\u0628\u062E \u062A\u062D\u0648\u064A\u0644 \u0627\u0644\u0637\u0644\u0628 \u0625\u0644\u0649 "\u0642\u064A\u062F \u0627\u0644\u062A\u062D\u0636\u064A\u0631" \u0623\u0648 "\u062C\u0627\u0647\u0632" \u0641\u0642\u0637'
+        );
+      }
+    } else if (actor.role === "cashier" || actor.role === "delivery") {
+      throw ApiError.forbidden(
+        "\u062A\u062D\u062F\u064A\u062B \u0647\u0630\u0647 \u0627\u0644\u062D\u0627\u0644\u0629 \u064A\u062A\u0645 \u0645\u0646 \u062E\u0644\u0627\u0644 \u0634\u0627\u0634\u0629 \u0627\u0644\u062A\u0648\u0635\u064A\u0644 \u0627\u0644\u0645\u062E\u0635\u0635\u0629"
+      );
+    }
+    if (status === "OUT_FOR_DELIVERY" || status === "DELIVERED") {
+      throw ApiError.forbidden(
+        "\u0625\u0633\u0646\u0627\u062F \u0627\u0644\u062A\u0648\u0635\u064A\u0644 \u0648\u062A\u0623\u0643\u064A\u062F \u0627\u0644\u062A\u0633\u0644\u064A\u0645 \u064A\u062A\u0645\u0627\u0646 \u0645\u0646 \u0634\u0627\u0634\u062A\u064A \u0627\u0644\u0643\u0627\u0634\u064A\u0631 \u0648\u0627\u0644\u062A\u0648\u0635\u064A\u0644"
+      );
+    }
     await orderRepository.updateOrderStatus(orderId, status);
     return loadOrderDto(orderId);
   },
@@ -1289,6 +1390,99 @@ var orderService = {
         totalPages: Math.ceil(total / page.limit)
       }
     };
+  },
+  async listDrivers() {
+    const drivers = await userRepository.listApprovedByRole("delivery");
+    return drivers.map((driver) => ({
+      id: driver.id,
+      name: driver.name,
+      email: driver.email,
+      phone: driver.phone
+    }));
+  },
+  async listForDelivery(page, actor) {
+    const { orders, total } = await orderRepository.list(
+      {
+        status: ["OUT_FOR_DELIVERY"],
+        deliveryUserId: actor.role === "delivery" ? actor.id : void 0
+      },
+      page
+    );
+    const items = await orderRepository.findItemsByOrderIds(
+      orders.map((order) => order.id)
+    );
+    return {
+      items: groupItems(orders, items),
+      pagination: {
+        page: page.page,
+        limit: page.limit,
+        total,
+        totalPages: Math.ceil(total / page.limit)
+      }
+    };
+  },
+  async dispatch(orderId, deliveryUserId, actor) {
+    if (actor.role !== "cashier" && actor.role !== "admin") {
+      throw ApiError.forbidden("\u0647\u0630\u0647 \u0627\u0644\u0639\u0645\u0644\u064A\u0629 \u0645\u062E\u0635\u0635\u0629 \u0644\u0644\u0643\u0627\u0634\u064A\u0631");
+    }
+    const order = await orderRepository.findById(orderId);
+    if (!order) throw ApiError.notFound("\u0627\u0644\u0637\u0644\u0628 \u063A\u064A\u0631 \u0645\u0648\u062C\u0648\u062F");
+    if (order.orderStatus !== "READY") {
+      throw ApiError.conflict("\u0644\u0627 \u064A\u0645\u0643\u0646 \u0625\u0633\u0646\u0627\u062F \u0627\u0644\u0637\u0644\u0628 \u0642\u0628\u0644 \u0623\u0646 \u064A\u0635\u0628\u062D \u062C\u0627\u0647\u0632\u0627\u064B");
+    }
+    const driver = await userRepository.findById(deliveryUserId);
+    if (!driver || driver.role !== "delivery" || !driver.isApproved) {
+      throw ApiError.badRequest("\u0633\u0627\u0626\u0642 \u0627\u0644\u062A\u0648\u0635\u064A\u0644 \u0627\u0644\u0645\u062D\u062F\u062F \u063A\u064A\u0631 \u0645\u062A\u0627\u062D");
+    }
+    const dispatched = await orderRepository.dispatchToDriver(
+      orderId,
+      deliveryUserId
+    );
+    if (!dispatched) {
+      throw ApiError.conflict(
+        "\u062A\u0645 \u062A\u062D\u062F\u064A\u062B \u0647\u0630\u0627 \u0627\u0644\u0637\u0644\u0628 \u0645\u0646 \u0642\u0628\u0644 \u0645\u0648\u0638\u0641 \u0622\u062E\u0631\u060C \u064A\u0631\u062C\u0649 \u0625\u0639\u0627\u062F\u0629 \u0627\u0644\u062A\u062D\u0645\u064A\u0644"
+      );
+    }
+    return loadOrderDto(orderId);
+  },
+  async confirmDelivery(orderId, cashReceived, actor) {
+    const order = await orderRepository.findById(orderId);
+    if (!order) throw ApiError.notFound("\u0627\u0644\u0637\u0644\u0628 \u063A\u064A\u0631 \u0645\u0648\u062C\u0648\u062F");
+    if (order.orderStatus !== "OUT_FOR_DELIVERY") {
+      throw ApiError.conflict("\u0647\u0630\u0627 \u0627\u0644\u0637\u0644\u0628 \u0644\u064A\u0633 \u0641\u064A \u0645\u0631\u062D\u0644\u0629 \u0627\u0644\u062A\u0648\u0635\u064A\u0644 \u062D\u0627\u0644\u064A\u0627\u064B");
+    }
+    if (actor.role === "delivery" && order.deliveryUserId !== actor.id) {
+      throw ApiError.forbidden("\u0647\u0630\u0627 \u0627\u0644\u0637\u0644\u0628 \u0645\u0633\u0646\u062F \u0625\u0644\u0649 \u0645\u0646\u062F\u0648\u0628 \u0622\u062E\u0631");
+    }
+    if (actor.role !== "delivery" && actor.role !== "admin") {
+      throw ApiError.forbidden("\u0647\u0630\u0647 \u0627\u0644\u0639\u0645\u0644\u064A\u0629 \u0645\u062E\u0635\u0635\u0629 \u0644\u0645\u0646\u062F\u0648\u0628 \u0627\u0644\u062A\u0648\u0635\u064A\u0644");
+    }
+    let recordedCash = null;
+    let change = null;
+    if (order.paymentStatus !== "PAID") {
+      if (cashReceived === void 0 || !Number.isFinite(cashReceived)) {
+        throw ApiError.badRequest("\u0627\u0644\u0645\u0628\u0644\u063A \u0627\u0644\u0645\u0633\u062A\u0644\u0645 \u0645\u0637\u0644\u0648\u0628 \u0644\u0625\u062A\u0645\u0627\u0645 \u0627\u0644\u062A\u0633\u0644\u064A\u0645");
+      }
+      const normalizedCash = roundMoney(cashReceived);
+      if (normalizedCash < order.totalAmount) {
+        throw ApiError.badRequest(
+          "\u0627\u0644\u0645\u0628\u0644\u063A \u0627\u0644\u0645\u0633\u062A\u0644\u0645 \u0623\u0642\u0644 \u0645\u0646 \u0625\u062C\u0645\u0627\u0644\u064A \u0627\u0644\u0637\u0644\u0628"
+        );
+      }
+      recordedCash = normalizedCash;
+      change = roundMoney(normalizedCash - order.totalAmount);
+    }
+    const completed = await orderRepository.completeDelivery(
+      orderId,
+      recordedCash,
+      change
+    );
+    if (!completed) {
+      throw ApiError.conflict(
+        "\u062A\u0645 \u062A\u0623\u0643\u064A\u062F \u062A\u0633\u0644\u064A\u0645 \u0647\u0630\u0627 \u0627\u0644\u0637\u0644\u0628 \u0645\u0646 \u0642\u0628\u0644\u060C \u064A\u0631\u062C\u0649 \u0625\u0639\u0627\u062F\u0629 \u0627\u0644\u062A\u062D\u0645\u064A\u0644"
+      );
+    }
+    return loadOrderDto(orderId);
   }
 };
 
@@ -1325,9 +1519,10 @@ var orderController = {
     res.json({ success: true, data: { order } });
   },
   async updateStatus(req, res) {
+    const user = requireAuthUser(req);
     const id = parseId(String(req.params.id), "\u0645\u0639\u0631\u0651\u0641 \u0627\u0644\u0637\u0644\u0628");
     const status = req.body.orderStatus;
-    const order = await orderService.updateStatus(id, status);
+    const order = await orderService.updateStatus(id, status, user);
     res.json({
       success: true,
       message: "\u062A\u0645 \u062A\u062D\u062F\u064A\u062B \u062D\u0627\u0644\u0629 \u0627\u0644\u0637\u0644\u0628",
@@ -1368,6 +1563,47 @@ var orderController = {
     );
     const result = await orderService.listCashier(page);
     res.json({ success: true, data: result });
+  },
+  async driverList(_req, res) {
+    const drivers = await orderService.listDrivers();
+    res.json({ success: true, data: { drivers } });
+  },
+  async deliveryList(req, res) {
+    const user = requireAuthUser(req);
+    const page = paginationFromQuery(
+      req.query,
+      env.pagination.defaultLimit,
+      env.pagination.maxLimit
+    );
+    const result = await orderService.listForDelivery(page, user);
+    res.json({ success: true, data: result });
+  },
+  async dispatch(req, res) {
+    const user = requireAuthUser(req);
+    const id = parseId(String(req.params.id), "\u0645\u0639\u0631\u0651\u0641 \u0627\u0644\u0637\u0644\u0628");
+    const deliveryUserId = Number(req.body.deliveryUserId);
+    const order = await orderService.dispatch(id, deliveryUserId, user);
+    res.json({
+      success: true,
+      message: "\u062A\u0645 \u0625\u0633\u0646\u0627\u062F \u0627\u0644\u0637\u0644\u0628 \u0644\u0644\u0645\u0646\u062F\u0648\u0628 \u0648\u0628\u062F\u0621 \u0627\u0644\u062A\u0648\u0635\u064A\u0644",
+      data: { order }
+    });
+  },
+  async confirmDelivery(req, res) {
+    const user = requireAuthUser(req);
+    const id = parseId(String(req.params.id), "\u0645\u0639\u0631\u0651\u0641 \u0627\u0644\u0637\u0644\u0628");
+    const rawCash = req.body.cashReceived;
+    const cashReceived = typeof rawCash === "number" && Number.isFinite(rawCash) ? rawCash : void 0;
+    const order = await orderService.confirmDelivery(
+      id,
+      cashReceived,
+      user
+    );
+    res.json({
+      success: true,
+      message: "\u062A\u0645 \u062A\u0623\u0643\u064A\u062F \u0627\u0644\u062A\u0633\u0644\u064A\u0645 \u0648\u0627\u0633\u062A\u0644\u0627\u0645 \u0627\u0644\u0645\u0628\u0644\u063A \u0628\u0646\u062C\u0627\u062D",
+      data: { order }
+    });
   }
 };
 
@@ -1588,7 +1824,7 @@ var asyncHandler = (handler2) => {
 
 // src/utils/jwt.ts
 var import_jsonwebtoken = __toESM(require("jsonwebtoken"));
-var isRole = (value) => value === "customer" || value === "admin" || value === "kitchen" || value === "cashier";
+var isRole = (value) => value === "customer" || value === "admin" || value === "kitchen" || value === "cashier" || value === "delivery";
 var signToken = (user) => {
   const options = {
     expiresIn: env.jwt.expiresIn,
@@ -1640,7 +1876,7 @@ var authenticateRequest = async (req) => {
     if (!user) {
       throw ApiError.unauthorized("\u0627\u0644\u062D\u0633\u0627\u0628 \u063A\u064A\u0631 \u0645\u0648\u062C\u0648\u062F", "AUTH_USER_NOT_FOUND");
     }
-    const requiresApproval = user.role === "kitchen" || user.role === "cashier";
+    const requiresApproval = user.role === "kitchen" || user.role === "cashier" || user.role === "delivery";
     if (requiresApproval && !user.isApproved) {
       throw ApiError.unauthorized(
         "\u062D\u0633\u0627\u0628\u0643 \u0642\u064A\u062F \u0627\u0644\u0645\u0631\u0627\u062C\u0639\u0629\u060C \u064A\u0631\u062C\u0649 \u0627\u0646\u062A\u0638\u0627\u0631 \u0645\u0648\u0627\u0641\u0642\u0629 \u0627\u0644\u0625\u062F\u0627\u0631\u0629",
@@ -1717,6 +1953,17 @@ var requireStaff = (req, _res, next) => {
   }
   next();
 };
+var requireDelivery = (req, _res, next) => {
+  if (!req.user) {
+    next(ApiError.unauthorized("\u064A\u062C\u0628 \u062A\u0633\u062C\u064A\u0644 \u0627\u0644\u062F\u062E\u0648\u0644 \u0644\u0644\u0645\u062A\u0627\u0628\u0639\u0629", "AUTH_REQUIRED"));
+    return;
+  }
+  if (req.user.role !== "delivery" && req.user.role !== "admin") {
+    next(ApiError.forbidden("\u0647\u0630\u0647 \u0627\u0644\u0635\u0641\u062D\u0629 \u0645\u062E\u0635\u0635\u0629 \u0644\u0641\u0631\u064A\u0642 \u0627\u0644\u062A\u0648\u0635\u064A\u0644"));
+    return;
+  }
+  next();
+};
 
 // src/middleware/validators.ts
 var import_express_validator = require("express-validator");
@@ -1751,6 +1998,14 @@ var orderRules = [
 var orderStatusRules = [
   (0, import_express_validator.param)("id").isInt({ min: 1 }).withMessage("\u0645\u0639\u0631\u0651\u0641 \u0627\u0644\u0637\u0644\u0628 \u063A\u064A\u0631 \u0635\u0627\u0644\u062D").toInt(),
   (0, import_express_validator.body)("orderStatus").isIn(orderStatusList).withMessage("\u062D\u0627\u0644\u0629 \u0627\u0644\u0637\u0644\u0628 \u063A\u064A\u0631 \u0635\u0627\u0644\u062D\u0629")
+];
+var dispatchOrderRules = [
+  (0, import_express_validator.param)("id").isInt({ min: 1 }).withMessage("\u0645\u0639\u0631\u0651\u0641 \u0627\u0644\u0637\u0644\u0628 \u063A\u064A\u0631 \u0635\u0627\u0644\u062D").toInt(),
+  (0, import_express_validator.body)("deliveryUserId").isInt({ min: 1 }).withMessage("\u064A\u062C\u0628 \u0627\u062E\u062A\u064A\u0627\u0631 \u0645\u0646\u062F\u0648\u0628 \u062A\u0648\u0635\u064A\u0644 \u0635\u0627\u0644\u062D").toInt()
+];
+var confirmDeliveryRules = [
+  (0, import_express_validator.param)("id").isInt({ min: 1 }).withMessage("\u0645\u0639\u0631\u0651\u0641 \u0627\u0644\u0637\u0644\u0628 \u063A\u064A\u0631 \u0635\u0627\u0644\u062D").toInt(),
+  (0, import_express_validator.body)("cashReceived").optional({ values: "null" }).isFloat({ min: 0, max: 1e6 }).withMessage("\u0627\u0644\u0645\u0628\u0644\u063A \u0627\u0644\u0645\u0633\u062A\u0644\u0645 \u063A\u064A\u0631 \u0635\u0627\u0644\u062D").toFloat()
 ];
 var reservationRules = [
   (0, import_express_validator.body)("name").trim().customSanitizer(sanitizePlainText).isLength({ min: 2, max: 100 }).withMessage("\u0627\u0644\u0627\u0633\u0645 \u064A\u062C\u0628 \u0623\u0646 \u064A\u0643\u0648\u0646 \u0628\u064A\u0646 2 \u0648 100 \u062D\u0631\u0641"),
@@ -1845,7 +2100,7 @@ var authService = {
     if (!valid) {
       throw ApiError.unauthorized("\u0627\u0644\u0628\u0631\u064A\u062F \u0627\u0644\u0625\u0644\u0643\u062A\u0631\u0648\u0646\u064A \u0623\u0648 \u0643\u0644\u0645\u0629 \u0627\u0644\u0645\u0631\u0648\u0631 \u063A\u064A\u0631 \u0635\u062D\u064A\u062D\u0629");
     }
-    if ((user.role === "kitchen" || user.role === "cashier") && !user.isApproved) {
+    if ((user.role === "kitchen" || user.role === "cashier" || user.role === "delivery") && !user.isApproved) {
       throw ApiError.forbidden(
         "\u062D\u0633\u0627\u0628\u0643 \u0642\u064A\u062F \u0627\u0644\u0645\u0631\u0627\u062C\u0639\u0629\u060C \u064A\u0631\u062C\u0649 \u0627\u0646\u062A\u0638\u0627\u0631 \u0645\u0648\u0627\u0641\u0642\u0629 \u0627\u0644\u0625\u062F\u0627\u0631\u0629"
       );
@@ -1913,6 +2168,9 @@ var authController = {
         message: "\u063A\u064A\u0631 \u0645\u0635\u0631\u062D \u0644\u0643 \u0628\u0627\u0644\u0648\u0635\u0648\u0644"
       });
       return;
+    }
+    if (role !== "kitchen" && role !== "cashier" && role !== "delivery") {
+      throw ApiError.badRequest("\u062F\u0648\u0631 \u0627\u0644\u0645\u0648\u0638\u0641 \u063A\u064A\u0631 \u0635\u0627\u0644\u062D");
     }
     const existing = await userRepository.findByEmail(email);
     if (existing) {
@@ -2164,6 +2422,16 @@ orderRoutes.get(
   asyncHandler(orderController.cashierList)
 );
 orderRoutes.get(
+  "/drivers",
+  requireCashier,
+  asyncHandler(orderController.driverList)
+);
+orderRoutes.get(
+  "/delivery",
+  requireDelivery,
+  asyncHandler(orderController.deliveryList)
+);
+orderRoutes.get(
   "/:id",
   orderIdRules,
   validate,
@@ -2175,6 +2443,20 @@ orderRoutes.patch(
   orderStatusRules,
   validate,
   asyncHandler(orderController.updateStatus)
+);
+orderRoutes.post(
+  "/:id/dispatch",
+  requireCashier,
+  dispatchOrderRules,
+  validate,
+  asyncHandler(orderController.dispatch)
+);
+orderRoutes.post(
+  "/:id/confirm-delivery",
+  requireDelivery,
+  confirmDeliveryRules,
+  validate,
+  asyncHandler(orderController.confirmDelivery)
 );
 
 // src/routes/paymentRoutes.ts
@@ -2383,7 +2665,7 @@ var statements = [
     email VARCHAR(255) NOT NULL,
     password_hash VARCHAR(255) NOT NULL,
     phone VARCHAR(20) NULL,
-    role ENUM('customer', 'admin', 'kitchen', 'cashier') NOT NULL DEFAULT 'customer',
+    role ENUM('customer', 'admin', 'kitchen', 'cashier', 'delivery') NOT NULL DEFAULT 'customer',
     is_approved BOOLEAN NOT NULL DEFAULT FALSE,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -2416,6 +2698,11 @@ var statements = [
     payment_id VARCHAR(100) NULL,
     payment_url VARCHAR(1000) NULL,
     payment_method ENUM('ONLINE','CASH') NOT NULL DEFAULT 'ONLINE',
+    delivery_user_id INT NULL,
+    dispatched_at DATETIME NULL,
+    delivered_at DATETIME NULL,
+    cash_received DECIMAL(10, 2) NULL,
+    cash_change DECIMAL(10, 2) NULL,
     notes TEXT NULL,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -2424,8 +2711,10 @@ var statements = [
     KEY idx_orders_payment_status (payment_status),
     KEY idx_orders_status (order_status),
     KEY idx_orders_payment_id (payment_id),
+    KEY idx_orders_delivery_user (delivery_user_id),
     KEY idx_orders_created (created_at),
-    CONSTRAINT fk_orders_user FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
+    CONSTRAINT fk_orders_user FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE,
+    CONSTRAINT fk_orders_delivery_user FOREIGN KEY (delivery_user_id) REFERENCES users (id) ON DELETE SET NULL
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
   `CREATE TABLE IF NOT EXISTS order_items (
     id INT NOT NULL AUTO_INCREMENT,
@@ -2472,6 +2761,50 @@ var columnMigrations = [
     column: "payment_method",
     definition: "ENUM('ONLINE','CASH') NOT NULL DEFAULT 'ONLINE'",
     after: "payment_url"
+  },
+  {
+    table: "orders",
+    column: "delivery_user_id",
+    definition: "INT NULL",
+    after: "payment_method"
+  },
+  {
+    table: "orders",
+    column: "dispatched_at",
+    definition: "DATETIME NULL",
+    after: "delivery_user_id"
+  },
+  {
+    table: "orders",
+    column: "delivered_at",
+    definition: "DATETIME NULL",
+    after: "dispatched_at"
+  },
+  {
+    table: "orders",
+    column: "cash_received",
+    definition: "DECIMAL(10, 2) NULL",
+    after: "delivered_at"
+  },
+  {
+    table: "orders",
+    column: "cash_change",
+    definition: "DECIMAL(10, 2) NULL",
+    after: "cash_received"
+  }
+];
+var indexMigrations = [
+  {
+    table: "orders",
+    name: "idx_orders_delivery_user",
+    columns: "`delivery_user_id`"
+  }
+];
+var foreignKeyMigrations = [
+  {
+    table: "orders",
+    name: "fk_orders_delivery_user",
+    definition: "FOREIGN KEY (`delivery_user_id`) REFERENCES `users` (`id`) ON DELETE SET NULL"
   }
 ];
 var columnExists = async (connection, table, column) => {
@@ -2484,6 +2817,32 @@ var columnExists = async (connection, table, column) => {
         AND COLUMN_NAME = ?
       LIMIT 1`,
     [table, column]
+  );
+  return rows.length > 0;
+};
+var indexExists = async (connection, table, name) => {
+  const rows = await queryRows(
+    connection,
+    `SELECT INDEX_NAME
+       FROM information_schema.STATISTICS
+      WHERE TABLE_SCHEMA = DATABASE()
+        AND TABLE_NAME = ?
+        AND INDEX_NAME = ?
+      LIMIT 1`,
+    [table, name]
+  );
+  return rows.length > 0;
+};
+var constraintExists = async (connection, table, name) => {
+  const rows = await queryRows(
+    connection,
+    `SELECT CONSTRAINT_NAME
+       FROM information_schema.TABLE_CONSTRAINTS
+      WHERE CONSTRAINT_SCHEMA = DATABASE()
+        AND TABLE_NAME = ?
+        AND CONSTRAINT_NAME = ?
+      LIMIT 1`,
+    [table, name]
   );
   return rows.length > 0;
 };
@@ -2517,9 +2876,37 @@ var initializeSchema = async () => {
         );
       }
     }
+    for (const migration of indexMigrations) {
+      if (await indexExists(connection, migration.table, migration.name)) {
+        continue;
+      }
+      const added = await runSchemaStatement(
+        connection,
+        `ALTER TABLE \`${migration.table}\` ADD INDEX \`${migration.name}\` (${migration.columns})`
+      );
+      if (added) {
+        console.info(
+          `Schema init: added index ${migration.table}.${migration.name}`
+        );
+      }
+    }
+    for (const migration of foreignKeyMigrations) {
+      if (await constraintExists(connection, migration.table, migration.name)) {
+        continue;
+      }
+      const added = await runSchemaStatement(
+        connection,
+        `ALTER TABLE \`${migration.table}\` ADD CONSTRAINT \`${migration.name}\` ${migration.definition}`
+      );
+      if (added) {
+        console.info(
+          `Schema init: added constraint ${migration.table}.${migration.name}`
+        );
+      }
+    }
     await runSchemaStatement(
       connection,
-      `ALTER TABLE users MODIFY COLUMN role ENUM('admin','kitchen','cashier','customer') NOT NULL DEFAULT 'customer'`
+      `ALTER TABLE users MODIFY COLUMN role ENUM('admin','kitchen','cashier','delivery','customer') NOT NULL DEFAULT 'customer'`
     );
     await runSchemaStatement(
       connection,
@@ -2719,6 +3106,13 @@ var ensureDefaultAccounts = async () => {
     email: env.staff.cashier.email,
     password: env.staff.cashier.password,
     role: "cashier",
+    updateExistingPassword: true
+  });
+  await ensureAccount({
+    name: "\u0641\u0631\u064A\u0642 \u0627\u0644\u062A\u0648\u0635\u064A\u0644",
+    email: env.staff.delivery.email,
+    password: env.staff.delivery.password,
+    role: "delivery",
     updateExistingPassword: true
   });
 };

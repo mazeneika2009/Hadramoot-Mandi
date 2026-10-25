@@ -24,7 +24,7 @@ const mapUser = (row: UserRow): UserRecord => ({
   phone: row.phone,
   role: row.role,
   createdAt: toIsoString(row.created_at),
-  isApproved: row.is_approved,
+  isApproved: Boolean(row.is_approved),
 });
 
 export const toUserDto = (user: UserRecord): UserDto => ({
@@ -57,6 +57,21 @@ export const userRepository = {
       [id],
     );
     return rows[0] ? mapUser(rows[0]) : null;
+  },
+
+  async listApprovedByRole(
+    role: Role,
+    client: DbClient = pool,
+  ): Promise<UserRecord[]> {
+    const rows = await queryRows<UserRow>(
+      client,
+      `SELECT ${selectColumns}
+         FROM users
+        WHERE role = ? AND is_approved = TRUE
+        ORDER BY name ASC, id ASC`,
+      [role],
+    );
+    return rows.map(mapUser);
   },
 
   async isApproved(id: number, client: DbClient = pool): Promise<boolean> {

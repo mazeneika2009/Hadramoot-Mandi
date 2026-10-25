@@ -51,6 +51,13 @@ export interface OrderRecord {
   paymentUrl: string | null;
   notes: string | null;
   paymentMethod: 'ONLINE' | 'CASH';
+  deliveryUserId: number | null;
+  deliveryUserName?: string | null;
+  deliveryUserPhone?: string | null;
+  dispatchedAt: string | null;
+  deliveredAt: string | null;
+  cashReceived: number | null;
+  cashChange: number | null;
   createdAt: string;
   updatedAt: string;
 }

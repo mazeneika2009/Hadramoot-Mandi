@@ -54,7 +54,11 @@ export const authController = {
   },
 
   async createStaff(req: Request, res: Response): Promise<void> {
-    const { email, password, role } = req.body as { email: string; password: string; role: 'kitchen' | 'cashier' };
+    const { email, password, role } = req.body as {
+      email: string;
+      password: string;
+      role: string;
+    };
     const myUser = requireAuthUser(req);
     if (myUser.role !== 'admin') {
       res.status(403).json({
@@ -62,6 +66,9 @@ export const authController = {
         message: 'غير مصرح لك بالوصول',
       });
       return;
+    }
+    if (role !== 'kitchen' && role !== 'cashier' && role !== 'delivery') {
+      throw ApiError.badRequest('دور الموظف غير صالح');
     }
     const existing = await userRepository.findByEmail(email);
     if (existing) {

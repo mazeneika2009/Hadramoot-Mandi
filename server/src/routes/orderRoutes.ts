@@ -3,11 +3,14 @@ import { orderController } from '../controllers/orderController';
 import {
   authenticate,
   requireCashier,
+  requireDelivery,
   requireKitchen,
   requireStaff,
 } from '../middleware/auth';
 import { checkoutLimiter } from '../middleware/rateLimit';
 import {
+  confirmDeliveryRules,
+  dispatchOrderRules,
   orderIdRules,
   orderRules,
   orderStatusRules,
@@ -29,8 +32,8 @@ orderRoutes.post(
 
 orderRoutes.get('/', asyncHandler(orderController.listMine));
 
-// Static routes must be declared before "/:id" so that "kitchen" and
-// "cashier" are not interpreted as order identifiers.
+// Static routes must be declared before "/:id" so that "kitchen",
+// "cashier", "delivery" and "drivers" are not interpreted as order IDs.
 orderRoutes.get(
   '/kitchen',
   requireKitchen,
@@ -41,6 +44,18 @@ orderRoutes.get(
   '/cashier',
   requireCashier,
   asyncHandler(orderController.cashierList),
+);
+
+orderRoutes.get(
+  '/drivers',
+  requireCashier,
+  asyncHandler(orderController.driverList),
+);
+
+orderRoutes.get(
+  '/delivery',
+  requireDelivery,
+  asyncHandler(orderController.deliveryList),
 );
 
 orderRoutes.get(
@@ -56,4 +71,20 @@ orderRoutes.patch(
   orderStatusRules,
   validate,
   asyncHandler(orderController.updateStatus),
+);
+
+orderRoutes.post(
+  '/:id/dispatch',
+  requireCashier,
+  dispatchOrderRules,
+  validate,
+  asyncHandler(orderController.dispatch),
+);
+
+orderRoutes.post(
+  '/:id/confirm-delivery',
+  requireDelivery,
+  confirmDeliveryRules,
+  validate,
+  asyncHandler(orderController.confirmDelivery),
 );

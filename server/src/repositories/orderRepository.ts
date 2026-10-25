@@ -9,7 +9,7 @@ import type {
 import { pool } from '../db/pool';
 import { executeStatement, queryRows, type DbClient } from '../db/query';
 import type { OrderItemRecord, OrderRecord } from '../types/domain';
-import { toIsoString, toNumber } from '../utils/sanitize';
+import { toIsoString, toNullableIsoString, toNumber } from '../utils/sanitize';
 
 interface OrderRow extends RowDataPacket {
   id: number;
@@ -25,6 +25,13 @@ interface OrderRow extends RowDataPacket {
   payment_url: string | null;
   notes: string | null;
   payment_method: 'ONLINE' | 'CASH';
+  delivery_user_id: number | null;
+  delivery_user_name?: string | null;
+  delivery_user_phone?: string | null;
+  dispatched_at: Date | string | null;
+  delivered_at: Date | string | null;
+  cash_received: string | number | null;
+  cash_change: string | number | null;
   created_at: Date | string;
   updated_at: Date | string;
 }
@@ -54,6 +61,15 @@ const mapOrder = (row: OrderRow): OrderRecord => ({
   paymentUrl: row.payment_url,
   notes: row.notes,
   paymentMethod: row.payment_method,
+  deliveryUserId:
+    row.delivery_user_id === null ? null : Number(row.delivery_user_id),
+  deliveryUserName: row.delivery_user_name ?? null,
+  deliveryUserPhone: row.delivery_user_phone ?? null,
+  dispatchedAt: toNullableIsoString(row.dispatched_at),
+  deliveredAt: toNullableIsoString(row.delivered_at),
+  cashReceived:
+    row.cash_received === null ? null : toNumber(row.cash_received),
+  cashChange: row.cash_change === null ? null : toNumber(row.cash_change),
   createdAt: toIsoString(row.created_at),
   updatedAt: toIsoString(row.updated_at),
 });
@@ -100,20 +116,35 @@ export const toOrderDto = (
   createdAt: order.createdAt,
   updatedAt: order.updatedAt,
   paymentMethod: order.paymentMethod,
+  deliveryUserId: order.deliveryUserId,
+  deliveryUserName: order.deliveryUserName ?? null,
+  deliveryUserPhone: order.deliveryUserPhone ?? null,
+  dispatchedAt: order.dispatchedAt,
+  deliveredAt: order.deliveredAt,
+  cashReceived: order.cashReceived,
+  cashChange: order.cashChange,
 });
 
 const orderSelect = `o.id, o.user_id, o.total_amount, o.delivery_address,
   o.payment_status, o.order_status, o.payment_id, o.payment_url, o.notes,
-  o.created_at, o.updated_at`;
+  o.payment_method, o.delivery_user_id, o.dispatched_at, o.delivered_at,
+  o.cash_received, o.cash_change, o.created_at, o.updated_at`;
 
 const customerSelect = `u.name AS customer_name, u.email AS customer_email,
   u.phone AS customer_phone`;
+
+const deliverySelect = `d.name AS delivery_user_name,
+  d.phone AS delivery_user_phone`;
+
+const orderJoins = `JOIN users u ON u.id = o.user_id
+  LEFT JOIN users d ON d.id = o.delivery_user_id`;
 
 const itemSelect = `oi.id, oi.order_id, oi.menu_item_id, oi.quantity,
   oi.price_at_purchase, mi.name, mi.name_en, mi.image_url`;
 
 export interface OrderListFilters {
   userId?: number;
+  deliveryUserId?: number;
   status?: OrderStatus | readonly OrderStatus[];
   paymentStatus?: PaymentStatus;
 }
@@ -130,8 +161,8 @@ export const orderRepository = {
   ): Promise<OrderRecord | null> {
     const rows = await queryRows<OrderRow>(
       client,
-      `SELECT ${orderSelect}, ${customerSelect}
-       FROM orders o JOIN users u ON u.id = o.user_id
+      `SELECT ${orderSelect}, ${customerSelect}, ${deliverySelect}
+       FROM orders o ${orderJoins}
        WHERE o.id = ? LIMIT 1`,
       [id],
     );
@@ -144,8 +175,8 @@ export const orderRepository = {
   ): Promise<OrderRecord | null> {
     const rows = await queryRows<OrderRow>(
       client,
-      `SELECT ${orderSelect}, ${customerSelect}
-       FROM orders o JOIN users u ON u.id = o.user_id
+      `SELECT ${orderSelect}, ${customerSelect}, ${deliverySelect}
+       FROM orders o ${orderJoins}
        WHERE o.payment_id = ? LIMIT 1`,
       [paymentId],
     );
@@ -163,6 +194,10 @@ export const orderRepository = {
     if (filters.userId !== undefined) {
       conditions.push('o.user_id = ?');
       params.push(filters.userId);
+    }
+    if (filters.deliveryUserId !== undefined) {
+      conditions.push('o.delivery_user_id = ?');
+      params.push(filters.deliveryUserId);
     }
     if (filters.status) {
       if (Array.isArray(filters.status)) {
@@ -188,8 +223,8 @@ export const orderRepository = {
 
     const rows = await queryRows<OrderRow>(
       client,
-      `SELECT ${orderSelect}, ${customerSelect}
-       FROM orders o JOIN users u ON u.id = o.user_id
+      `SELECT ${orderSelect}, ${customerSelect}, ${deliverySelect}
+       FROM orders o ${orderJoins}
        ${where}
        ORDER BY o.created_at DESC
        LIMIT ? OFFSET ?`,
@@ -311,6 +346,56 @@ export const orderRepository = {
       'UPDATE orders SET order_status = ? WHERE id = ?',
       [orderStatus, orderId],
     );
+  },
+
+  /**
+   * Assigns a ready order to a driver and dispatches it in one atomic step.
+   * The status predicate prevents two cashiers from dispatching the same
+   * order concurrently.
+   */
+  async dispatchToDriver(
+    orderId: number,
+    deliveryUserId: number,
+    client: DbClient = pool,
+  ): Promise<boolean> {
+    const result = await executeStatement(
+      client,
+      `UPDATE orders
+          SET delivery_user_id = ?,
+              order_status = 'OUT_FOR_DELIVERY',
+              dispatched_at = NOW(),
+              delivered_at = NULL,
+              cash_received = NULL,
+              cash_change = NULL
+        WHERE id = ? AND order_status = 'READY'`,
+      [deliveryUserId, orderId],
+    );
+    return result.affectedRows > 0;
+  },
+
+  /**
+   * Completes a dispatched order, records the cash handover and marks the
+   * payment as paid. The status predicate makes confirmation idempotent-safe:
+   * a second request cannot overwrite the recorded delivery.
+   */
+  async completeDelivery(
+    orderId: number,
+    cashReceived: number | null,
+    cashChange: number | null,
+    client: DbClient = pool,
+  ): Promise<boolean> {
+    const result = await executeStatement(
+      client,
+      `UPDATE orders
+          SET order_status = 'DELIVERED',
+              payment_status = 'PAID',
+              delivered_at = NOW(),
+              cash_received = ?,
+              cash_change = ?
+        WHERE id = ? AND order_status = 'OUT_FOR_DELIVERY'`,
+      [cashReceived, cashChange, orderId],
+    );
+    return result.affectedRows > 0;
   },
 
   async getStats(client: DbClient = pool): Promise<AdminStats> {

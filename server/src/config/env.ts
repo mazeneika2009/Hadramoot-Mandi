@@ -111,6 +111,10 @@ export const env = {
       email: readString('CASHIER_EMAIL', 'cashier@hadramout.com'),
       password: readString('CASHIER_PASSWORD', 'secure_cashier_pass'),
     },
+    delivery: {
+      email: readString('DELIVERY_EMAIL', 'delivery@hadramout.com'),
+      password: readString('DELIVERY_PASSWORD', 'secure_delivery_pass'),
+    },
   },
   rateLimit: {
     generalWindowMs: readNumber('RATE_LIMIT_WINDOW_MS', 15 * 60 * 1000),

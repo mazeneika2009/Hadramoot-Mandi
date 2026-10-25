@@ -161,7 +161,7 @@ interface DefaultAccount {
   name: string;
   email: string;
   password: string;
-  role: 'admin' | 'kitchen' | 'cashier';
+  role: 'admin' | 'kitchen' | 'cashier' | 'delivery';
   updateExistingPassword: boolean;
 }
 
@@ -208,8 +208,8 @@ const ensureAccount = async (account: DefaultAccount): Promise<void> => {
 
 /**
  * Creates or refreshes the env-configured admin and staff accounts.
- * Staff credentials come from KITCHEN_* / CASHIER_* variables so deployments
- * can rotate them without touching the database.
+ * Staff credentials come from KITCHEN_* / CASHIER_* / DELIVERY_* variables so
+ * deployments can rotate them without touching the database.
  */
 export const ensureDefaultAccounts = async (): Promise<void> => {
   await ensureAccount({
@@ -231,6 +231,13 @@ export const ensureDefaultAccounts = async (): Promise<void> => {
     email: env.staff.cashier.email,
     password: env.staff.cashier.password,
     role: 'cashier',
+    updateExistingPassword: true,
+  });
+  await ensureAccount({
+    name: 'فريق التوصيل',
+    email: env.staff.delivery.email,
+    password: env.staff.delivery.password,
+    role: 'delivery',
     updateExistingPassword: true,
   });
 };

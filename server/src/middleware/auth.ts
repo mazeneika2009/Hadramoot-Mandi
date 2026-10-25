@@ -24,7 +24,10 @@ const authenticateRequest = async (req: Request): Promise<void> => {
 
     // Approval only gates staff accounts. Customers are auto-approved and
     // administrators can never be locked out of their own panel.
-    const requiresApproval = user.role === 'kitchen' || user.role === 'cashier';
+    const requiresApproval =
+      user.role === 'kitchen' ||
+      user.role === 'cashier' ||
+      user.role === 'delivery';
     if (requiresApproval && !user.isApproved) {
       throw ApiError.unauthorized(
         'حسابك قيد المراجعة، يرجى انتظار موافقة الإدارة',
@@ -125,6 +128,22 @@ export const requireStaff = (
     req.user.role !== 'cashier'
   ) {
     next(ApiError.forbidden('غير مصرح لك بتحديث حالة الطلب'));
+    return;
+  }
+  next();
+};
+
+export const requireDelivery = (
+  req: Request,
+  _res: Response,
+  next: NextFunction,
+): void => {
+  if (!req.user) {
+    next(ApiError.unauthorized('يجب تسجيل الدخول للمتابعة', 'AUTH_REQUIRED'));
+    return;
+  }
+  if (req.user.role !== 'delivery' && req.user.role !== 'admin') {
+    next(ApiError.forbidden('هذه الصفحة مخصصة لفريق التوصيل'));
     return;
   }
   next();

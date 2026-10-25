@@ -50,9 +50,10 @@ export const orderController = {
   },
 
   async updateStatus(req: Request, res: Response): Promise<void> {
+    const user = requireAuthUser(req);
     const id = parseId(String(req.params.id), 'معرّف الطلب');
     const status = req.body.orderStatus as OrderStatus;
-    const order = await orderService.updateStatus(id, status);
+    const order = await orderService.updateStatus(id, status, user);
     res.json({
       success: true,
       message: 'تم تحديث حالة الطلب',
@@ -102,5 +103,53 @@ export const orderController = {
     );
     const result = await orderService.listCashier(page);
     res.json({ success: true, data: result });
+  },
+
+  async driverList(_req: Request, res: Response): Promise<void> {
+    const drivers = await orderService.listDrivers();
+    res.json({ success: true, data: { drivers } });
+  },
+
+  async deliveryList(req: Request, res: Response): Promise<void> {
+    const user = requireAuthUser(req);
+    const page = paginationFromQuery(
+      req.query,
+      env.pagination.defaultLimit,
+      env.pagination.maxLimit,
+    );
+    const result = await orderService.listForDelivery(page, user);
+    res.json({ success: true, data: result });
+  },
+
+  async dispatch(req: Request, res: Response): Promise<void> {
+    const user = requireAuthUser(req);
+    const id = parseId(String(req.params.id), 'معرّف الطلب');
+    const deliveryUserId = Number(req.body.deliveryUserId);
+    const order = await orderService.dispatch(id, deliveryUserId, user);
+    res.json({
+      success: true,
+      message: 'تم إسناد الطلب للمندوب وبدء التوصيل',
+      data: { order },
+    });
+  },
+
+  async confirmDelivery(req: Request, res: Response): Promise<void> {
+    const user = requireAuthUser(req);
+    const id = parseId(String(req.params.id), 'معرّف الطلب');
+    const rawCash = req.body.cashReceived as unknown;
+    const cashReceived =
+      typeof rawCash === 'number' && Number.isFinite(rawCash)
+        ? rawCash
+        : undefined;
+    const order = await orderService.confirmDelivery(
+      id,
+      cashReceived,
+      user,
+    );
+    res.json({
+      success: true,
+      message: 'تم تأكيد التسليم واستلام المبلغ بنجاح',
+      data: { order },
+    });
   },
 };
