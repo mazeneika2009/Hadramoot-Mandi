@@ -99,7 +99,7 @@ Open http://localhost:5173.
 | `npm run dev:client`     | Vite dev server only                            |
 | `npm run build`          | Type-check + build server (tsup) and client     |
 | `npm run typecheck`      | `tsc --noEmit` for both workspaces              |
-| `npm run start`          | Serve the built API (`node dist/index.js`)      |
+| `npm run start`          | Serve the built API (`node dist/server.js`)     |
 | `npm run db:init`        | Create tables                                   |
 | `npm run db:seed`        | Seed menu items and the admin user              |
 
@@ -140,3 +140,28 @@ Rate limits are applied globally and tightened on auth, checkout, reservation, a
 npm run build      # emits server/dist and client/dist
 npm run start      # runs the API; serve client/dist with any static host or proxy it
 ```
+
+## Deploying to Vercel
+
+The repository deploys as one Vercel project using [Services](https://vercel.com/docs/services):
+
+- `client` (`client/`, Vite) is served from `/`
+- `server` (`server/`, Express) handles `/api/*`
+
+The routing lives in `vercel.json`. The client is a static SPA and calls the API on the same origin (`/api`), so there are no service-to-service bindings. The serverless entrypoint is `server/src/index.ts`, which exports the Express app without opening a listener; local Node hosting uses `server/src/server.ts`.
+
+Steps:
+
+1. Import the repository into Vercel and set the project framework preset to **Services**.
+2. Add the variables from `.env.example` in **Project Settings → Environment Variables** (at minimum `DB_*`, `JWT_SECRET`, `FRONTEND_URL`, `ADMIN_*`, and `FAWATERAK_*`). `.env` is excluded by `.vercelignore`.
+3. Point `DB_HOST`/`DB_PORT` at a MySQL instance reachable from Vercel (localhost is not reachable).
+4. Initialize and seed the remote database once from your machine, using the same `DB_*` values: `npm run db:init && npm run db:seed`.
+5. Set `FAWATERAK_CALLBACK_URL` to `https://<your-deployment>/api/payments/webhook`.
+
+To exercise both services locally through the public routing table:
+
+```bash
+npx vercel dev --local
+```
+
+Then open http://localhost:3000. On Windows, Vercel CLI can occasionally lose the detached Vite process after its dependency-sync watcher fires; if `/` returns `500` while `/api/health` works, rerun `vercel dev` after `npm install` has settled.
