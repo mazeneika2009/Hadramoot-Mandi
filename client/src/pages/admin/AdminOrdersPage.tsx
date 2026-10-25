@@ -40,6 +40,16 @@ const statusFilterOptions = [
   })),
 ];
 
+/**
+ * These two statuses are reserved for the cashier dispatch and delivery
+ * confirmation screens, where the driver assignment and payment are recorded
+ * alongside the status change.
+ */
+const reservedStatuses: ReadonlySet<OrderStatus> = new Set([
+  'OUT_FOR_DELIVERY',
+  'DELIVERED',
+]);
+
 const paymentFilterOptions = [
   { value: 'ALL', label: 'كل حالات الدفع' },
   ...(Object.keys(paymentStatuses) as PaymentStatus[]).map((status) => ({
@@ -109,7 +119,7 @@ export const AdminOrdersPage = () => {
     if (authLoading || !isAuthenticated) return;
     const interval = window.setInterval(() => {
       void loadOrders({ silent: true });
-    }, 30_000);
+    }, 10_000);
     return () => window.clearInterval(interval);
   }, [authLoading, isAuthenticated, loadOrders]);
 
@@ -267,6 +277,11 @@ export const AdminOrdersPage = () => {
                             {order.deliveryAddress}
                           </span>
                         </span>
+                        {order.deliveryUserName ? (
+                          <span className="inline-flex items-center gap-1 font-semibold text-violet-700">
+                            المندوب: {order.deliveryUserName}
+                          </span>
+                        ) : null}
                       </div>
                     </button>
 
@@ -292,15 +307,27 @@ export const AdminOrdersPage = () => {
                           }
                           disabled={
                             updatingId === order.id ||
-                            order.orderStatus === 'CANCELLED'
+                            order.orderStatus === 'CANCELLED' ||
+                            order.orderStatus === 'DELIVERED' ||
+                            order.orderStatus === 'OUT_FOR_DELIVERY'
                           }
                           className="rounded-xl border border-sand-200 bg-white px-3 py-2 text-xs font-bold text-emerald-deep outline-none transition focus:border-emerald-deep disabled:opacity-50"
                         >
-                          {orderStatusList.map((status) => (
-                            <option key={status} value={status}>
-                              {orderStatuses[status].ar}
-                            </option>
-                          ))}
+                          {orderStatusList.map((status) => {
+                            const reserved = reservedStatuses.has(status);
+                            if (reserved && status !== order.orderStatus) {
+                              return null;
+                            }
+                            return (
+                              <option
+                                key={status}
+                                value={status}
+                                disabled={reserved}
+                              >
+                                {orderStatuses[status].ar}
+                              </option>
+                            );
+                          })}
                         </select>
                         {updatingId === order.id ? (
                           <Spinner className="h-4 w-4 text-emerald-deep" />
@@ -354,6 +381,44 @@ export const AdminOrdersPage = () => {
                                 ملاحظات:{' '}
                               </span>
                               {order.notes}
+                            </p>
+                          ) : null}
+                          {order.deliveryUserName ? (
+                            <p>
+                              <span className="font-bold text-emerald-deep">
+                                مندوب التوصيل:{' '}
+                              </span>
+                              {order.deliveryUserName}
+                              {order.deliveryUserPhone
+                                ? ` · ${order.deliveryUserPhone}`
+                                : ''}
+                            </p>
+                          ) : null}
+                          {order.dispatchedAt ? (
+                            <p>
+                              <span className="font-bold text-emerald-deep">
+                                وقت الخروج:{' '}
+                              </span>
+                              {formatDateTime(order.dispatchedAt)}
+                            </p>
+                          ) : null}
+                          {order.deliveredAt ? (
+                            <p>
+                              <span className="font-bold text-emerald-deep">
+                                وقت التسليم:{' '}
+                              </span>
+                              {formatDateTime(order.deliveredAt)}
+                            </p>
+                          ) : null}
+                          {order.cashReceived !== null ? (
+                            <p>
+                              <span className="font-bold text-emerald-deep">
+                                المبلغ المستلم:{' '}
+                              </span>
+                              {formatPrice(order.cashReceived)}
+                              {order.cashChange !== null
+                                ? ` · الباقي ${formatPrice(order.cashChange)}`
+                                : ''}
                             </p>
                           ) : null}
                           {order.paymentId ? (

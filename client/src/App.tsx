@@ -1,10 +1,12 @@
 import { KitchenPage } from './pages/KitchenPage';
 import { CashierPage } from './pages/CashierPage';
+import { DeliveryPage } from './pages/DeliveryPage';
 import { Route, Routes } from 'react-router-dom';
 import { SiteLayout } from './components/layout/SiteLayout';
 import { ScrollManager } from './components/layout/ScrollManager';
 import {
   AdminRoute,
+  DeliveryRoute,
   ProtectedRoute,
   RoleRouteGuard,
 } from './components/layout/ProtectedRoute';
@@ -37,6 +39,9 @@ const App = () => (
             <Route path="orders" element={<OrdersPage />} />
             <Route path="kitchen" element={<KitchenPage />} />
             <Route path="cashier" element={<CashierPage />} />
+            <Route element={<DeliveryRoute />}>
+              <Route path="delivery" element={<DeliveryPage />} />
+            </Route>
           </Route>
 
           <Route path="admin" element={<AdminRoute />}>

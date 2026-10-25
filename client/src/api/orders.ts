@@ -1,6 +1,7 @@
 import type {
   AdminStats,
   CreateOrderInput,
+  DeliveryDriverDto,
   OrderDto,
   OrderStatus,
   Paginated,
@@ -56,6 +57,46 @@ export const orderApi = {
     return request<Paginated<OrderDto>>(
       `/orders/cashier${buildPageQuery(page, limit)}`,
     );
+  },
+
+  async listDrivers(): Promise<DeliveryDriverDto[]> {
+    const data = await request<{ drivers: DeliveryDriverDto[] }>(
+      '/orders/drivers',
+    );
+    return data.drivers;
+  },
+
+  listDelivery(page?: number, limit?: number): Promise<Paginated<OrderDto>> {
+    return request<Paginated<OrderDto>>(
+      `/orders/delivery${buildPageQuery(page, limit)}`,
+    );
+  },
+
+  async dispatch(id: number, deliveryUserId: number): Promise<OrderDto> {
+    const data = await request<{ order: OrderDto }>(
+      `/orders/${id}/dispatch`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ deliveryUserId }),
+      },
+    );
+    return data.order;
+  },
+
+  async confirmDelivery(
+    id: number,
+    cashReceived?: number,
+  ): Promise<OrderDto> {
+    const data = await request<{ order: OrderDto }>(
+      `/orders/${id}/confirm-delivery`,
+      {
+        method: 'POST',
+        body: JSON.stringify(
+          cashReceived === undefined ? {} : { cashReceived },
+        ),
+      },
+    );
+    return data.order;
   },
 
   async getById(id: number): Promise<OrderDto> {

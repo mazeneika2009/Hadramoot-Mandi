@@ -27,7 +27,7 @@ const mobileWorkspaceLinkClass = ({ isActive }: { isActive: boolean }): string =
 
 export const Navbar = () => {
   const [mobileOpen, setMobileOpen] = useState(false);
-  const { user, isAuthenticated, isAdmin, isKitchen, isCashier, logout } =
+  const { user, isAuthenticated, isAdmin, isKitchen, isCashier, isDelivery, logout } =
     useAuth();
   const { itemCount, openCart } = useCart();
   const location = useLocation();
@@ -36,13 +36,21 @@ export const Navbar = () => {
     ? [
         { to: '/kitchen', label: 'المطبخ' },
         { to: '/cashier', label: 'الكاشير' },
+        { to: '/delivery', label: 'التوصيل' },
       ]
     : [
         ...(isKitchen ? [{ to: '/kitchen', label: 'المطبخ' }] : []),
         ...(isCashier ? [{ to: '/cashier', label: 'الكاشير' }] : []),
+        ...(isDelivery ? [{ to: '/delivery', label: 'التوصيل' }] : []),
       ];
-  const isStaff = isKitchen || isCashier;
-  const homePath = isKitchen ? '/kitchen' : isCashier ? '/cashier' : '/';
+  const isStaff = isKitchen || isCashier || isDelivery;
+  const homePath = isKitchen
+    ? '/kitchen'
+    : isCashier
+      ? '/cashier'
+      : isDelivery
+        ? '/delivery'
+        : '/';
 
   useEffect(() => {
     setMobileOpen(false);

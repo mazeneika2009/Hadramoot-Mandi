@@ -11,6 +11,7 @@ const roleHome = (role?: string): string => {
   if (role === 'admin') return '/admin';
   if (role === 'kitchen') return '/kitchen';
   if (role === 'cashier') return '/cashier';
+  if (role === 'delivery') return '/delivery';
   return '/orders';
 };
 

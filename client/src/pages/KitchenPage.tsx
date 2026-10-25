@@ -1,9 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import {
-  formatPrice,
-  orderStatuses,
-  orderStatusList,
-} from '@shared/config';
+import { formatPrice, orderStatuses } from '@shared/config';
 import type { OrderDto, OrderStatus } from '@shared/api';
 import { getStoredToken } from '../api/client';
 import { orderApi } from '../api/orders';
@@ -17,14 +13,16 @@ import { getErrorMessage } from '../utils/format';
 
 const KitchenOrderRow = ({
   order,
+  updating,
   onStatusChange,
 }: {
   order: OrderDto;
+  updating: boolean;
   onStatusChange: (orderId: number, newStatus: OrderStatus) => void;
 }) => {
   const orderMeta = orderStatuses[order.orderStatus];
   return (
-    <div key={order.id} className="card-surface p-4 border-b border-sand-200">
+    <div className="card-surface border-b border-sand-200 p-4">
       <div className="flex items-center justify-between gap-3">
         <div>
           <p className="font-display text-xl font-bold text-emerald-deep">
@@ -51,20 +49,35 @@ const KitchenOrderRow = ({
             </span>
           </div>
         ))}
-        <div className="mt-2 font-bold text-emerald-deep">الإجمالي: {formatPrice(order.totalAmount)}</div>
+        <div className="mt-2 font-bold text-emerald-deep">
+          الإجمالي: {formatPrice(order.totalAmount)}
+        </div>
       </div>
 
-      <div className="mt-4">
-        <select
-          className="rounded-xl border border-sand-200 bg-white px-3 py-2 text-xs font-bold text-emerald-deep outline-none transition focus:border-emerald-deep"
-          onChange={(e) => onStatusChange(order.id, e.target.value as OrderStatus)}
-        >
-          {orderStatusList.map((status) => (
-            <option key={status} value={status}>
-              {orderStatuses[status].ar}
-            </option>
-          ))}
-        </select>
+      <div className="mt-4 flex flex-wrap items-center gap-2">
+        {order.orderStatus === 'PENDING' ? (
+          <button
+            type="button"
+            onClick={() => onStatusChange(order.id, 'PREPARING')}
+            disabled={updating}
+            className="btn-primary px-4 py-2 text-xs"
+          >
+            {updating ? <Spinner className="h-4 w-4" /> : null}
+            ابدأ التحضير
+          </button>
+        ) : null}
+        {order.orderStatus === 'PENDING' ||
+        order.orderStatus === 'PREPARING' ? (
+          <button
+            type="button"
+            onClick={() => onStatusChange(order.id, 'READY')}
+            disabled={updating}
+            className="btn-gold px-4 py-2 text-xs"
+          >
+            {updating ? <Spinner className="h-4 w-4" /> : null}
+            جاهز للتسليم
+          </button>
+        ) : null}
       </div>
     </div>
   );
@@ -79,18 +92,20 @@ export const KitchenPage = () => {
 
   const { isAuthenticated, loading: authLoading } = useAuth();
 
-  const loadOrders = useCallback(async () => {
+  const loadOrders = useCallback(async (silent = false) => {
     if (authLoading || !isAuthenticated || !getStoredToken()) return;
-    setLoading(true);
+    if (!silent) setLoading(true);
     setError(null);
     try {
       const result = await orderApi.listKitchen(1, 50);
       setOrders(result.items);
     } catch (err) {
-      setError(getErrorMessage(err));
-      showToast('فشل تحميل طلبات المطبخ', 'error');
+      if (!silent) {
+        setError(getErrorMessage(err));
+        showToast('فشل تحميل طلبات المطبخ', 'error');
+      }
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   }, [authLoading, isAuthenticated, showToast]);
 
@@ -98,8 +113,8 @@ export const KitchenPage = () => {
     if (authLoading || !isAuthenticated) return;
     void loadOrders();
     const timer = window.setInterval(() => {
-      if (!document.hidden) void loadOrders();
-    }, 15000);
+      if (!document.hidden) void loadOrders(true);
+    }, 10_000);
     return () => window.clearInterval(timer);
   }, [authLoading, isAuthenticated, loadOrders]);
 
@@ -109,9 +124,15 @@ export const KitchenPage = () => {
     try {
       const updated = await orderApi.updateStatus(orderId, newStatus);
       setOrders((current) =>
-        current.map((item) => (item.id === updated.id ? updated : item)),
+        newStatus === 'READY'
+          ? current.filter((item) => item.id !== updated.id)
+          : current.map((item) => (item.id === updated.id ? updated : item)),
       );
-      showToast(`تم تحديث طلب #${orderId} إلى ${orderStatuses[newStatus].ar}`);
+      showToast(
+        newStatus === 'READY'
+          ? `طلب #${orderId} جاهز وانتقل إلى شاشة الكاشير`
+          : `تم تحديث طلب #${orderId} إلى ${orderStatuses[newStatus].ar}`,
+      );
     } catch (updateError) {
       showToast(getErrorMessage(updateError), 'error');
     } finally {
@@ -157,12 +178,13 @@ export const KitchenPage = () => {
           <p className="section-kicker">نظام عرض المطبخ</p>
           <h1 className="section-title mt-2">طلبات المطبخ الجديدة</h1>
           <p className="mt-2 text-sm text-night/55">
-            تظهر الطلبات الجديدة هنا فور إنشائها، ويمكنك تحديث حالتها إلى "قيد التحضير" أو "جاهز".
+            تظهر الطلبات الجديدة هنا فور إنشائها. عند تجهيز الطلب اضغط "جاهز
+            للتسليم" لينتقل تلقائياً إلى شاشة الكاشير.
           </p>
         </div>
         <button
           type="button"
-          onClick={() => void loadOrders()}
+          onClick={() => void loadOrders(true)}
           disabled={loading}
           className="btn-secondary px-4 py-2 text-xs"
         >
@@ -177,7 +199,16 @@ export const KitchenPage = () => {
             <p className="text-night/45">لا توجد طلبات جديدة في هذه اللحظة</p>
           </div>
         ) : (
-          <div>{orders.map((order) => <KitchenOrderRow key={order.id} order={order} onStatusChange={handleStatusChange} />)}</div>
+          <div>
+            {orders.map((order) => (
+              <KitchenOrderRow
+                key={order.id}
+                order={order}
+                updating={updatingId === order.id}
+                onStatusChange={handleStatusChange}
+              />
+            ))}
+          </div>
         )}
       </div>
     </section>

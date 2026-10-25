@@ -82,8 +82,21 @@ export const OrdersPage = () => {
     void loadOrders();
     const timer = window.setInterval(() => {
       if (!document.hidden) void loadOrders(true);
-    }, 30000);
+    }, 10_000);
     return () => window.clearInterval(timer);
+  }, [isAuthenticated, authLoading, loadOrders]);
+
+  useEffect(() => {
+    if (!isAuthenticated || authLoading) return;
+    const refreshWhenVisible = () => {
+      if (!document.hidden) void loadOrders(true);
+    };
+    window.addEventListener('focus', refreshWhenVisible);
+    document.addEventListener('visibilitychange', refreshWhenVisible);
+    return () => {
+      window.removeEventListener('focus', refreshWhenVisible);
+      document.removeEventListener('visibilitychange', refreshWhenVisible);
+    };
   }, [isAuthenticated, authLoading, loadOrders]);
 
   useEffect(() => {
@@ -197,6 +210,36 @@ export const OrdersPage = () => {
                       <div className="mt-5 text-xs leading-6 text-night/55">
                         <span>{order.deliveryAddress}</span>
                       </div>
+                      {order.deliveryUserName ? (
+                        <p className="mt-2 text-xs leading-6 text-night/55">
+                          <span className="font-bold text-emerald-deep">
+                            مندوب التوصيل:{' '}
+                          </span>
+                          {order.deliveryUserName}
+                          {order.deliveryUserPhone
+                            ? ` · ${order.deliveryUserPhone}`
+                            : ''}
+                        </p>
+                      ) : null}
+                      {order.deliveredAt ? (
+                        <p className="mt-1 text-xs leading-6 text-night/55">
+                          <span className="font-bold text-emerald-deep">
+                            تم التسليم:{' '}
+                          </span>
+                          {formatDateTime(order.deliveredAt)}
+                        </p>
+                      ) : null}
+                      {order.cashReceived !== null ? (
+                        <p className="mt-1 text-xs leading-6 text-night/55">
+                          <span className="font-bold text-emerald-deep">
+                            المستلم:{' '}
+                          </span>
+                          {formatPrice(order.cashReceived)}
+                          {order.cashChange !== null
+                            ? ` · الباقي ${formatPrice(order.cashChange)}`
+                            : ''}
+                        </p>
+                      ) : null}
                       {order.notes ? (
                         <p className="mt-2 rounded-xl bg-sand-50 px-3 py-2 text-xs leading-6 text-night/55">
                           ملاحظات: {order.notes}

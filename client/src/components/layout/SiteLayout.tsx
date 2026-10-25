@@ -8,8 +8,8 @@ import { CartDrawer } from './CartDrawer';
 import { ToastViewport } from '../ui/ToastViewport';
 
 export const SiteLayout = () => {
-  const { isKitchen, isCashier } = useAuth();
-  const isStaff = isKitchen || isCashier;
+  const { isKitchen, isCashier, isDelivery } = useAuth();
+  const isStaff = isKitchen || isCashier || isDelivery;
 
   useEffect(() => {
     document.title = `${brand.name} | ${brand.tagline}`;

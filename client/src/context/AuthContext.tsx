@@ -20,6 +20,7 @@ interface AuthContextValue {
   isAdmin: boolean;
   isKitchen: boolean;
   isCashier: boolean;
+  isDelivery: boolean;
   isApproved: boolean;
   login: (payload: LoginPayload) => Promise<UserDto>;
   register: (payload: RegisterPayload) => Promise<UserDto>;
@@ -37,7 +38,13 @@ const readStoredUser = (): UserDto | null => {
       typeof parsed.id !== 'number' ||
       typeof parsed.name !== 'string' ||
       typeof parsed.email !== 'string' ||
-      !(parsed.role === 'customer' || parsed.role === 'admin' || parsed.role === 'kitchen' || parsed.role === 'cashier')
+      !(
+        parsed.role === 'customer' ||
+        parsed.role === 'admin' ||
+        parsed.role === 'kitchen' ||
+        parsed.role === 'cashier' ||
+        parsed.role === 'delivery'
+      )
     ) {
       return null;
     }
@@ -157,6 +164,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
       isAdmin: user?.role === 'admin',
       isKitchen: user?.role === 'kitchen',
       isCashier: user?.role === 'cashier',
+      isDelivery: user?.role === 'delivery',
       isApproved: user?.isApproved ?? false,
       login,
       register,

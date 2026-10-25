@@ -3,6 +3,7 @@ import { orderStatuses, type OrderStatus } from '@shared/config';
 const steps: OrderStatus[] = [
   'PENDING',
   'PREPARING',
+  'READY',
   'OUT_FOR_DELIVERY',
   'DELIVERED',
 ];
@@ -19,14 +20,14 @@ export const OrderStatusTimeline = ({ status }: { status: OrderStatus }) => {
   const currentStep = orderStatuses[status].step;
 
   return (
-    <div className="grid grid-cols-4 gap-1">
+    <div className="grid grid-cols-5 gap-1">
       {steps.map((step) => {
         const meta = orderStatuses[step];
         const reached = meta.step <= currentStep;
         const active = meta.step === currentStep;
         return (
           <div key={step} className="relative flex flex-col items-center gap-2 text-center">
-            {meta.step < 4 ? (
+            {meta.step < 5 ? (
               <span
                 className="absolute top-4 right-[-50%] h-0.5 w-full"
                 style={{

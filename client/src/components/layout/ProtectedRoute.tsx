@@ -5,13 +5,19 @@ import { PageLoader } from '../ui/Feedback';
 const normalizePath = (path: string): string => path.replace(/\/+$/, '') || '/';
 
 /**
- * Global guard that keeps kitchen/cashier staff inside their own workspace.
- * It sits above the layout routes, so an unauthorized page never mounts or
- * fires a data fetch before the redirect.
+ * Global guard that keeps kitchen, cashier and delivery staff inside their own
+ * workspace. It sits above the layout routes, so an unauthorized page never
+ * mounts or fires a data fetch before the redirect.
  */
 export const RoleRouteGuard = () => {
-  const { loading, isAuthenticated, isApproved, isKitchen, isCashier } =
-    useAuth();
+  const {
+    loading,
+    isAuthenticated,
+    isApproved,
+    isKitchen,
+    isCashier,
+    isDelivery,
+  } = useAuth();
   const location = useLocation();
 
   if (loading) return <PageLoader label="جارٍ التحقق من حسابك..." />;
@@ -27,14 +33,24 @@ export const RoleRouteGuard = () => {
     if (isCashier && path !== '/cashier') {
       return <Navigate to="/cashier" replace />;
     }
+    if (isDelivery && path !== '/delivery') {
+      return <Navigate to="/delivery" replace />;
+    }
   }
 
   return <Outlet />;
 };
 
 export const ProtectedRoute = () => {
-  const { loading, isAuthenticated, isAdmin, isKitchen, isCashier, isApproved } =
-    useAuth();
+  const {
+    loading,
+    isAuthenticated,
+    isAdmin,
+    isKitchen,
+    isCashier,
+    isDelivery,
+    isApproved,
+  } = useAuth();
   const location = useLocation();
 
   if (loading) return <PageLoader label="جارٍ التحقق من حسابك..." />;
@@ -47,7 +63,7 @@ export const ProtectedRoute = () => {
   }
 
   // Staff accounts require administrator approval.
-  if ((isKitchen || isCashier) && !isApproved) {
+  if ((isKitchen || isCashier || isDelivery) && !isApproved) {
     return <Navigate to="/login?pending=1" replace />;
   }
 
@@ -57,6 +73,37 @@ export const ProtectedRoute = () => {
   }
   if (!isAdmin && isCashier && normalizePath(location.pathname) !== '/cashier') {
     return <Navigate to="/cashier" replace />;
+  }
+  if (
+    !isAdmin &&
+    isDelivery &&
+    normalizePath(location.pathname) !== '/delivery'
+  ) {
+    return <Navigate to="/delivery" replace />;
+  }
+
+  return <Outlet />;
+};
+
+/**
+ * Only delivery drivers (and administrators) may open the delivery workspace.
+ * Customers and other staff are redirected before any delivery request fires.
+ */
+export const DeliveryRoute = () => {
+  const { loading, isAuthenticated, isAdmin, isDelivery } = useAuth();
+  const location = useLocation();
+
+  if (loading) return <PageLoader label="جارٍ التحقق من صلاحياتك..." />;
+
+  if (!isAuthenticated) {
+    const redirect = encodeURIComponent(
+      `${location.pathname}${location.search}`,
+    );
+    return <Navigate to={`/login?redirect=${redirect}`} replace />;
+  }
+
+  if (!isAdmin && !isDelivery) {
+    return <Navigate to="/" replace />;
   }
 
   return <Outlet />;

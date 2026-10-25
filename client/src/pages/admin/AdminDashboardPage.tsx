@@ -26,9 +26,9 @@ export const AdminDashboardPage = () => {
   const [error, setError] = useState<string | null>(null);
   const { isAuthenticated, loading: authLoading } = useAuth();
 
-  const loadDashboard = useCallback(async () => {
+  const loadDashboard = useCallback(async (silent = false) => {
     if (authLoading || !isAuthenticated || !getStoredToken()) return;
-    setLoading(true);
+    if (!silent) setLoading(true);
     setError(null);
     try {
       const [statsResult, ordersResult] = await Promise.all([
@@ -38,15 +38,19 @@ export const AdminDashboardPage = () => {
       setStats(statsResult);
       setRecentOrders(ordersResult.items);
     } catch (loadError) {
-      setError(getErrorMessage(loadError));
+      if (!silent) setError(getErrorMessage(loadError));
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   }, [authLoading, isAuthenticated]);
 
   useEffect(() => {
     if (authLoading || !isAuthenticated) return;
     void loadDashboard();
+    const timer = window.setInterval(() => {
+      if (!document.hidden) void loadDashboard(true);
+    }, 10_000);
+    return () => window.clearInterval(timer);
   }, [authLoading, isAuthenticated, loadDashboard]);
 
   if (loading) return <PageLoader label="جارٍ تحميل الإحصائيات..." />;
@@ -83,7 +87,7 @@ export const AdminDashboardPage = () => {
     {
       label: 'قيد التحضير',
       value: String(stats?.preparingOrders ?? 0),
-      hint: `${stats?.outForDeliveryOrders ?? 0} خرج للتوصيل`,
+      hint: `${stats?.outForDeliveryOrders ?? 0} خرج للتوصيل · ${stats?.deliveredOrders ?? 0} تم التسليم`,
       tone: 'bg-amber-50 text-amber-700',
     },
     {
@@ -222,6 +226,19 @@ export const AdminDashboardPage = () => {
                 حجوزات الطاولات
               </p>
               <p className="text-xs text-night/45">تأكيد وإلغاء الحجوزات</p>
+            </div>
+          </Link>
+          <Link
+            to="/delivery"
+            className="group flex items-center gap-4 rounded-3xl bg-white p-5 shadow-sm transition hover:shadow-soft"
+          >
+            <div>
+              <p className="font-display text-lg font-bold text-emerald-deep">
+                شاشة التوصيل
+              </p>
+              <p className="text-xs text-night/45">
+                متابعة المندوبين وتأكيد التحصيل
+              </p>
             </div>
           </Link>
         </div>
