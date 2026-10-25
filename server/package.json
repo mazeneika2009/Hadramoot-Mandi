@@ -3,14 +3,14 @@
   "version": "1.0.0",
   "private": true,
   "description": "Hadramout House of Mandi REST API",
-  "main": "dist/index.js",
+  "main": "dist/server.js",
   "scripts": {
-    "dev": "tsx watch src/index.ts",
-    "build": "tsup src/index.ts --format cjs --target node20 --out-dir dist --clean",
-    "start": "node dist/index.js",
+    "dev": "tsx watch src/server.ts",
+    "build": "tsup src/server.ts --format cjs --target node20 --out-dir dist --clean",
+    "start": "node dist/server.js",
     "typecheck": "tsc --noEmit",
     "db:init": "tsx src/db/init.ts",
-    "db:seed": "tsx src/db/seed.ts"
+    "db:seed": "tsx src/db/seedCli.ts"
   },
   "dependencies": {
     "axios": "^1.20.0",

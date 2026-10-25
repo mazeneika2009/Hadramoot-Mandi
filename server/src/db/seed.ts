@@ -274,18 +274,3 @@ export const runSeed = async (): Promise<void> => {
   await initializeSchema();
   await seedDatabase();
 };
-
-if (require.main === module) {
-  void runSeed()
-    .then(() => {
-      console.log('Database seeded successfully');
-      process.exitCode = 0;
-    })
-    .catch((error: unknown) => {
-      console.error('Seeding failed:', error);
-      process.exitCode = 1;
-    })
-    .finally(() => {
-      void pool.end();
-    });
-}
