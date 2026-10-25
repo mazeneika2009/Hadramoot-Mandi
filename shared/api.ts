@@ -10,7 +10,7 @@ export type {
   ReservationStatus,
 } from './config';
 
-export type Role = 'customer' | 'admin' | 'kitchen' | 'cashier';
+export type Role = 'customer' | 'admin' | 'kitchen' | 'cashier' | 'delivery';
 
 export interface UserDto {
   id: number;
@@ -64,6 +64,28 @@ export interface OrderDto {
   createdAt: string;
   updatedAt: string;
   paymentMethod: 'ONLINE' | 'CASH';
+  deliveryUserId: number | null;
+  deliveryUserName: string | null;
+  deliveryUserPhone: string | null;
+  dispatchedAt: string | null;
+  deliveredAt: string | null;
+  cashReceived: number | null;
+  cashChange: number | null;
+}
+
+export interface DeliveryDriverDto {
+  id: number;
+  name: string;
+  email: string;
+  phone: string | null;
+}
+
+export interface DispatchOrderInput {
+  deliveryUserId: number;
+}
+
+export interface ConfirmDeliveryInput {
+  cashReceived?: number;
 }
 
 export interface ReservationDto {

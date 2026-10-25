@@ -105,7 +105,7 @@ Open http://localhost:5173.
 
 ## Environment variables
 
-See [`.env.example`](.env.example) for the full list. The essentials:
+See [`.env`] for the full list. The essentials:
 
 | Variable          | Purpose                                             |
 | ----------------- | --------------------------------------------------- |
