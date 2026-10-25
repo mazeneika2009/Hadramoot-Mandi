@@ -102,6 +102,16 @@ export const env = {
     email: process.env.ADMIN_EMAIL?.trim() || 'admin@hadramout-mandi.com',
     password: process.env.ADMIN_PASSWORD ?? '',
   },
+  staff: {
+    kitchen: {
+      email: readString('KITCHEN_EMAIL', 'kitchen@hadramout.com'),
+      password: readString('KITCHEN_PASSWORD', 'secure_kitchen_pass'),
+    },
+    cashier: {
+      email: readString('CASHIER_EMAIL', 'cashier@hadramout.com'),
+      password: readString('CASHIER_PASSWORD', 'secure_cashier_pass'),
+    },
+  },
   rateLimit: {
     generalWindowMs: readNumber('RATE_LIMIT_WINDOW_MS', 15 * 60 * 1000),
     generalMax: readNumber('RATE_LIMIT_MAX', 300),

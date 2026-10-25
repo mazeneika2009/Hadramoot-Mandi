@@ -1,9 +1,12 @@
+import { KitchenPage } from './pages/KitchenPage';
+import { CashierPage } from './pages/CashierPage';
 import { Route, Routes } from 'react-router-dom';
 import { SiteLayout } from './components/layout/SiteLayout';
 import { ScrollManager } from './components/layout/ScrollManager';
 import {
   AdminRoute,
   ProtectedRoute,
+  RoleRouteGuard,
 } from './components/layout/ProtectedRoute';
 import { AdminLayout } from './components/admin/AdminLayout';
 import { HomePage } from './pages/HomePage';
@@ -22,27 +25,31 @@ const App = () => (
   <>
     <ScrollManager />
     <Routes>
-      <Route element={<SiteLayout />}>
-        <Route index element={<HomePage />} />
-        <Route path="reservations" element={<ReservationsPage />} />
-        <Route path="login" element={<LoginPage />} />
-        <Route path="register" element={<RegisterPage />} />
+      <Route element={<RoleRouteGuard />}>
+        <Route element={<SiteLayout />}>
+          <Route index element={<HomePage />} />
+          <Route path="reservations" element={<ReservationsPage />} />
+          <Route path="login" element={<LoginPage />} />
+          <Route path="register" element={<RegisterPage />} />
 
-        <Route element={<ProtectedRoute />}>
-          <Route path="checkout" element={<CheckoutPage />} />
-          <Route path="orders" element={<OrdersPage />} />
-        </Route>
-
-        <Route path="admin" element={<AdminRoute />}>
-          <Route element={<AdminLayout />}>
-            <Route index element={<AdminDashboardPage />} />
-            <Route path="menu" element={<AdminMenuPage />} />
-            <Route path="orders" element={<AdminOrdersPage />} />
-            <Route path="reservations" element={<AdminReservationsPage />} />
+          <Route element={<ProtectedRoute />}>
+            <Route path="checkout" element={<CheckoutPage />} />
+            <Route path="orders" element={<OrdersPage />} />
+            <Route path="kitchen" element={<KitchenPage />} />
+            <Route path="cashier" element={<CashierPage />} />
           </Route>
-        </Route>
 
-        <Route path="*" element={<NotFoundPage />} />
+          <Route path="admin" element={<AdminRoute />}>
+            <Route element={<AdminLayout />}>
+              <Route index element={<AdminDashboardPage />} />
+              <Route path="menu" element={<AdminMenuPage />} />
+              <Route path="orders" element={<AdminOrdersPage />} />
+              <Route path="reservations" element={<AdminReservationsPage />} />
+            </Route>
+          </Route>
+
+          <Route path="*" element={<NotFoundPage />} />
+        </Route>
       </Route>
     </Routes>
   </>

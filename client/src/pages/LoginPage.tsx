@@ -7,6 +7,13 @@ import { Alert, Spinner } from '../components/ui/Feedback';
 import { InputField } from '../components/ui/FormFields';
 import { getErrorDetails, getErrorMessage } from '../utils/format';
 
+const roleHome = (role?: string): string => {
+  if (role === 'admin') return '/admin';
+  if (role === 'kitchen') return '/kitchen';
+  if (role === 'cashier') return '/cashier';
+  return '/orders';
+};
+
 const safeRedirect = (value: string | null): string | null => {
   if (!value || !value.startsWith('/') || value.startsWith('//')) return null;
   return value;
@@ -24,12 +31,11 @@ export const LoginPage = () => {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const redirect = safeRedirect(searchParams.get('redirect'));
+  const showPendingNotice = searchParams.get('pending') === '1';
 
   useEffect(() => {
     if (!loading && isAuthenticated) {
-      navigate(redirect ?? (user?.role === 'admin' ? '/admin' : '/orders'), {
-        replace: true,
-      });
+      navigate(redirect ?? roleHome(user?.role), { replace: true });
     }
   }, [loading, isAuthenticated, navigate, redirect, user?.role]);
 
@@ -42,10 +48,7 @@ export const LoginPage = () => {
     try {
       const loggedIn = await login({ email: email.trim(), password });
       showToast(`أهلاً بعودتك يا ${loggedIn.name}`);
-      navigate(
-        redirect ?? (loggedIn.role === 'admin' ? '/admin' : '/orders'),
-        { replace: true },
-      );
+      // Navigation is handled by the effect above once auth state is committed.
     } catch (loginError) {
       setError(getErrorMessage(loginError));
       setFieldErrors(getErrorDetails(loginError));
@@ -71,6 +74,12 @@ export const LoginPage = () => {
       }
     >
       <form onSubmit={handleSubmit} className="space-y-5" noValidate>
+        {showPendingNotice ? (
+          <Alert kind="info">
+            حسابك قيد المراجعة، يرجى انتظار موافقة الإدارة قبل تسجيل الدخول.
+          </Alert>
+        ) : null}
+
         {error ? (
           <Alert kind="error">
             <div>

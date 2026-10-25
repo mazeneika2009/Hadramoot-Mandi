@@ -24,6 +24,7 @@ interface OrderRow extends RowDataPacket {
   payment_id: string | null;
   payment_url: string | null;
   notes: string | null;
+  payment_method: 'ONLINE' | 'CASH';
   created_at: Date | string;
   updated_at: Date | string;
 }
@@ -52,6 +53,7 @@ const mapOrder = (row: OrderRow): OrderRecord => ({
   paymentId: row.payment_id,
   paymentUrl: row.payment_url,
   notes: row.notes,
+  paymentMethod: row.payment_method,
   createdAt: toIsoString(row.created_at),
   updatedAt: toIsoString(row.updated_at),
 });
@@ -97,6 +99,7 @@ export const toOrderDto = (
   items: items.map(toOrderItemDto),
   createdAt: order.createdAt,
   updatedAt: order.updatedAt,
+  paymentMethod: order.paymentMethod,
 });
 
 const orderSelect = `o.id, o.user_id, o.total_amount, o.delivery_address,
@@ -111,7 +114,7 @@ const itemSelect = `oi.id, oi.order_id, oi.menu_item_id, oi.quantity,
 
 export interface OrderListFilters {
   userId?: number;
-  status?: OrderStatus;
+  status?: OrderStatus | readonly OrderStatus[];
   paymentStatus?: PaymentStatus;
 }
 
@@ -162,8 +165,14 @@ export const orderRepository = {
       params.push(filters.userId);
     }
     if (filters.status) {
-      conditions.push('o.order_status = ?');
-      params.push(filters.status);
+      if (Array.isArray(filters.status)) {
+        const placeholders = filters.status.map(() => '?').join(', ');
+        conditions.push(`o.order_status IN (${placeholders})`);
+        params.push(...filters.status);
+      } else {
+        conditions.push('o.order_status = ?');
+        params.push(filters.status);
+      }
     }
     if (filters.paymentStatus) {
       conditions.push('o.payment_status = ?');
@@ -223,18 +232,20 @@ export const orderRepository = {
       userId: number;
       totalAmount: number;
       deliveryAddress: string;
+      paymentMethod: 'ONLINE' | 'CASH';
       notes: string | null;
     },
   ): Promise<number> {
     const result = await executeStatement(
       client,
       `INSERT INTO orders
-         (user_id, total_amount, delivery_address, payment_status, order_status, notes)
-       VALUES (?, ?, ?, 'PENDING', 'PENDING', ?)`,
+         (user_id, total_amount, delivery_address, payment_status, order_status, payment_method, notes)
+       VALUES (?, ?, ?, 'PENDING', 'PENDING', ?, ?)`,
       [
         data.userId,
         data.totalAmount,
         data.deliveryAddress,
+        data.paymentMethod,
         data.notes,
       ],
     );

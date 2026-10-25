@@ -18,6 +18,9 @@ interface AuthContextValue {
   loading: boolean;
   isAuthenticated: boolean;
   isAdmin: boolean;
+  isKitchen: boolean;
+  isCashier: boolean;
+  isApproved: boolean;
   login: (payload: LoginPayload) => Promise<UserDto>;
   register: (payload: RegisterPayload) => Promise<UserDto>;
   logout: () => void;
@@ -34,7 +37,7 @@ const readStoredUser = (): UserDto | null => {
       typeof parsed.id !== 'number' ||
       typeof parsed.name !== 'string' ||
       typeof parsed.email !== 'string' ||
-      (parsed.role !== 'customer' && parsed.role !== 'admin')
+      !(parsed.role === 'customer' || parsed.role === 'admin' || parsed.role === 'kitchen' || parsed.role === 'cashier')
     ) {
       return null;
     }
@@ -84,6 +87,9 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
       .me()
       .then((profile) => {
         if (!active) return;
+        if (localStorage.getItem(appConfig.storageKeys.token) !== storedToken) {
+          return;
+        }
         setUser(profile);
         localStorage.setItem(
           appConfig.storageKeys.user,
@@ -93,7 +99,12 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
       .catch((error: unknown) => {
         if (!active) return;
         if (error instanceof ApiClientError && error.status === 401) {
-          clearSession();
+          // If the token changed while this request was in flight (for example
+          // the user logged in again), do not destroy the new session.
+          const currentToken = localStorage.getItem(appConfig.storageKeys.token);
+          if (currentToken === storedToken) {
+            clearSession();
+          }
         }
       })
       .finally(() => {
@@ -115,6 +126,9 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   const login = useCallback(
     async (payload: LoginPayload): Promise<UserDto> => {
       const response = await authApi.login(payload);
+      // persistSession writes the token to localStorage synchronously, so any
+      // request issued after this resolves already carries the new token.
+      // Navigation happens in an effect once the auth state has rendered.
       persistSession(response);
       return response.user;
     },
@@ -141,6 +155,9 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
       loading,
       isAuthenticated: Boolean(user && token),
       isAdmin: user?.role === 'admin',
+      isKitchen: user?.role === 'kitchen',
+      isCashier: user?.role === 'cashier',
+      isApproved: user?.isApproved ?? false,
       login,
       register,
       logout,

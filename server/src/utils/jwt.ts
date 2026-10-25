@@ -10,7 +10,10 @@ interface TokenPayload extends jwt.JwtPayload {
 }
 
 const isRole = (value: unknown): value is Role =>
-  value === 'customer' || value === 'admin';
+  value === 'customer' ||
+  value === 'admin' ||
+  value === 'kitchen' ||
+  value === 'cashier';
 
 export const signToken = (user: AuthUser): string => {
   const options: SignOptions = {

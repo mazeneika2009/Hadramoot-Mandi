@@ -83,4 +83,24 @@ export const orderController = {
     const stats = await orderService.getStats();
     res.json({ success: true, data: { stats } });
   },
+
+  async kitchenList(req: Request, res: Response): Promise<void> {
+    const page = paginationFromQuery(
+      req.query,
+      env.pagination.defaultLimit,
+      env.pagination.maxLimit,
+    );
+    const result = await orderService.listKitchen(page);
+    res.json({ success: true, data: result });
+  },
+
+  async cashierList(req: Request, res: Response): Promise<void> {
+    const page = paginationFromQuery(
+      req.query,
+      env.pagination.defaultLimit,
+      env.pagination.maxLimit,
+    );
+    const result = await orderService.listCashier(page);
+    res.json({ success: true, data: result });
+  },
 };

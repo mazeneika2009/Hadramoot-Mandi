@@ -66,13 +66,14 @@ var menuCategories = [
 var orderStatuses = {
   PENDING: { ar: "\u0641\u064A \u0627\u0644\u0627\u0646\u062A\u0638\u0627\u0631", en: "Pending", color: "#d97706", step: 1 },
   PREPARING: { ar: "\u0642\u064A\u062F \u0627\u0644\u062A\u062D\u0636\u064A\u0631", en: "Preparing", color: "#2563eb", step: 2 },
+  READY: { ar: "\u062C\u0627\u0647\u0632", en: "Ready", color: "#10b981", step: 3 },
   OUT_FOR_DELIVERY: {
     ar: "\u062E\u0631\u062C \u0644\u0644\u062A\u0648\u0635\u064A\u0644",
     en: "Out for delivery",
     color: "#7c3aed",
-    step: 3
+    step: 4
   },
-  DELIVERED: { ar: "\u062A\u0645 \u0627\u0644\u062A\u0633\u0644\u064A\u0645", en: "Delivered", color: "#059669", step: 4 },
+  DELIVERED: { ar: "\u062A\u0645 \u0627\u0644\u062A\u0633\u0644\u064A\u0645", en: "Delivered", color: "#059669", step: 5 },
   CANCELLED: { ar: "\u0645\u0644\u063A\u064A", en: "Cancelled", color: "#dc2626", step: 0 }
 };
 var orderStatusList = Object.keys(orderStatuses);
@@ -206,6 +207,16 @@ var env = {
     name: process.env.ADMIN_NAME?.trim() || "\u0645\u062F\u064A\u0631 \u0627\u0644\u0645\u0637\u0639\u0645",
     email: process.env.ADMIN_EMAIL?.trim() || "admin@hadramout-mandi.com",
     password: process.env.ADMIN_PASSWORD ?? ""
+  },
+  staff: {
+    kitchen: {
+      email: readString("KITCHEN_EMAIL", "kitchen@hadramout.com"),
+      password: readString("KITCHEN_PASSWORD", "secure_kitchen_pass")
+    },
+    cashier: {
+      email: readString("CASHIER_EMAIL", "cashier@hadramout.com"),
+      password: readString("CASHIER_PASSWORD", "secure_cashier_pass")
+    }
   },
   rateLimit: {
     generalWindowMs: readNumber("RATE_LIMIT_WINDOW_MS", 15 * 60 * 1e3),
@@ -572,6 +583,7 @@ var mapOrder = (row) => ({
   paymentId: row.payment_id,
   paymentUrl: row.payment_url,
   notes: row.notes,
+  paymentMethod: row.payment_method,
   createdAt: toIsoString(row.created_at),
   updatedAt: toIsoString(row.updated_at)
 });
@@ -610,7 +622,8 @@ var toOrderDto = (order, items) => ({
   notes: order.notes,
   items: items.map(toOrderItemDto),
   createdAt: order.createdAt,
-  updatedAt: order.updatedAt
+  updatedAt: order.updatedAt,
+  paymentMethod: order.paymentMethod
 });
 var orderSelect = `o.id, o.user_id, o.total_amount, o.delivery_address,
   o.payment_status, o.order_status, o.payment_id, o.payment_url, o.notes,
@@ -648,8 +661,14 @@ var orderRepository = {
       params.push(filters.userId);
     }
     if (filters.status) {
-      conditions.push("o.order_status = ?");
-      params.push(filters.status);
+      if (Array.isArray(filters.status)) {
+        const placeholders = filters.status.map(() => "?").join(", ");
+        conditions.push(`o.order_status IN (${placeholders})`);
+        params.push(...filters.status);
+      } else {
+        conditions.push("o.order_status = ?");
+        params.push(filters.status);
+      }
     }
     if (filters.paymentStatus) {
       conditions.push("o.payment_status = ?");
@@ -695,12 +714,13 @@ var orderRepository = {
     const result = await executeStatement(
       client,
       `INSERT INTO orders
-         (user_id, total_amount, delivery_address, payment_status, order_status, notes)
-       VALUES (?, ?, ?, 'PENDING', 'PENDING', ?)`,
+         (user_id, total_amount, delivery_address, payment_status, order_status, payment_method, notes)
+       VALUES (?, ?, ?, 'PENDING', 'PENDING', ?, ?)`,
       [
         data.userId,
         data.totalAmount,
         data.deliveryAddress,
+        data.paymentMethod,
         data.notes
       ]
     );
@@ -789,7 +809,8 @@ var mapUser = (row) => ({
   passwordHash: row.password_hash,
   phone: row.phone,
   role: row.role,
-  createdAt: toIsoString(row.created_at)
+  createdAt: toIsoString(row.created_at),
+  isApproved: row.is_approved
 });
 var toUserDto = (user) => ({
   id: user.id,
@@ -797,9 +818,10 @@ var toUserDto = (user) => ({
   email: user.email,
   phone: user.phone,
   role: user.role,
-  createdAt: user.createdAt
+  createdAt: user.createdAt,
+  isApproved: user.isApproved
 });
-var selectColumns2 = "id, name, email, password_hash, phone, role, created_at";
+var selectColumns2 = "id, name, email, password_hash, phone, role, created_at, is_approved";
 var userRepository = {
   async findByEmail(email, client = pool) {
     const rows = await queryRows(
@@ -817,17 +839,34 @@ var userRepository = {
     );
     return rows[0] ? mapUser(rows[0]) : null;
   },
+  async isApproved(id, client = pool) {
+    const rows = await queryRows(
+      client,
+      `SELECT ${selectColumns2} FROM users WHERE id = ? LIMIT 1`,
+      [id]
+    );
+    return rows[0]?.is_approved ?? false;
+  },
+  async updateApproval(id, approved, client = pool) {
+    await executeStatement(
+      client,
+      `UPDATE users SET is_approved = ? WHERE id = ?`,
+      [approved ? 1 : 0, id]
+    );
+  },
   async create(data, client = pool) {
+    const isApproved = data.isApproved ?? (data.role === "customer" || data.role === "admin");
     const result = await executeStatement(
       client,
-      `INSERT INTO users (name, email, password_hash, phone, role)
-       VALUES (?, ?, ?, ?, ?)`,
+      `INSERT INTO users (name, email, password_hash, phone, role, is_approved)
+       VALUES (?, ?, ?, ?, ?, ?)`,
       [
         data.name,
         data.email.toLowerCase(),
         data.passwordHash,
         data.phone,
-        data.role
+        data.role,
+        isApproved ? 1 : 0
       ]
     );
     return Number(result.insertId);
@@ -1127,10 +1166,12 @@ var orderService = {
           price: menuItem.price
         });
       }
+      const paymentMethod = input.paymentMethod ?? "ONLINE";
       orderId = await orderRepository.insertOrder(connection, {
         userId,
         totalAmount,
         deliveryAddress: input.deliveryAddress,
+        paymentMethod,
         notes: input.notes?.trim() || null
       });
       for (const item of validatedItems) {
@@ -1212,6 +1253,42 @@ var orderService = {
   },
   async getStats() {
     return orderRepository.getStats();
+  },
+  async listKitchen(page) {
+    const { orders, total } = await orderRepository.list(
+      { userId: void 0, status: ["PENDING", "PREPARING"] },
+      page
+    );
+    const items = await orderRepository.findItemsByOrderIds(
+      orders.map((order) => order.id)
+    );
+    return {
+      items: groupItems(orders, items),
+      pagination: {
+        page: page.page,
+        limit: page.limit,
+        total,
+        totalPages: Math.ceil(total / page.limit)
+      }
+    };
+  },
+  async listCashier(page) {
+    const { orders, total } = await orderRepository.list(
+      { userId: void 0, status: ["READY"] },
+      page
+    );
+    const items = await orderRepository.findItemsByOrderIds(
+      orders.map((order) => order.id)
+    );
+    return {
+      items: groupItems(orders, items),
+      pagination: {
+        page: page.page,
+        limit: page.limit,
+        total,
+        totalPages: Math.ceil(total / page.limit)
+      }
+    };
   }
 };
 
@@ -1273,6 +1350,24 @@ var orderController = {
   async stats(_req, res) {
     const stats = await orderService.getStats();
     res.json({ success: true, data: { stats } });
+  },
+  async kitchenList(req, res) {
+    const page = paginationFromQuery(
+      req.query,
+      env.pagination.defaultLimit,
+      env.pagination.maxLimit
+    );
+    const result = await orderService.listKitchen(page);
+    res.json({ success: true, data: result });
+  },
+  async cashierList(req, res) {
+    const page = paginationFromQuery(
+      req.query,
+      env.pagination.defaultLimit,
+      env.pagination.maxLimit
+    );
+    const result = await orderService.listCashier(page);
+    res.json({ success: true, data: result });
   }
 };
 
@@ -1493,7 +1588,7 @@ var asyncHandler = (handler2) => {
 
 // src/utils/jwt.ts
 var import_jsonwebtoken = __toESM(require("jsonwebtoken"));
-var isRole = (value) => value === "customer" || value === "admin";
+var isRole = (value) => value === "customer" || value === "admin" || value === "kitchen" || value === "cashier";
 var signToken = (user) => {
   const options = {
     expiresIn: env.jwt.expiresIn,
@@ -1539,12 +1634,26 @@ var authenticateRequest = async (req) => {
   if (!token) {
     throw ApiError.unauthorized("\u064A\u062C\u0628 \u062A\u0633\u062C\u064A\u0644 \u0627\u0644\u062F\u062E\u0648\u0644 \u0644\u0644\u0645\u062A\u0627\u0628\u0639\u0629", "AUTH_REQUIRED");
   }
-  const payload = verifyToken(token);
-  const user = await userRepository.findById(payload.id);
-  if (!user) {
-    throw ApiError.unauthorized("\u0627\u0644\u062D\u0633\u0627\u0628 \u063A\u064A\u0631 \u0645\u0648\u062C\u0648\u062F", "AUTH_USER_NOT_FOUND");
+  try {
+    const payload = verifyToken(token);
+    const user = await userRepository.findById(payload.id);
+    if (!user) {
+      throw ApiError.unauthorized("\u0627\u0644\u062D\u0633\u0627\u0628 \u063A\u064A\u0631 \u0645\u0648\u062C\u0648\u062F", "AUTH_USER_NOT_FOUND");
+    }
+    const requiresApproval = user.role === "kitchen" || user.role === "cashier";
+    if (requiresApproval && !user.isApproved) {
+      throw ApiError.unauthorized(
+        "\u062D\u0633\u0627\u0628\u0643 \u0642\u064A\u062F \u0627\u0644\u0645\u0631\u0627\u062C\u0639\u0629\u060C \u064A\u0631\u062C\u0649 \u0627\u0646\u062A\u0638\u0627\u0631 \u0645\u0648\u0627\u0641\u0642\u0629 \u0627\u0644\u0625\u062F\u0627\u0631\u0629",
+        "USER_NOT_APPROVED"
+      );
+    }
+    req.user = { id: user.id, email: user.email, role: user.role, isApproved: user.isApproved };
+  } catch (error) {
+    if (error instanceof ApiError) {
+      throw error;
+    }
+    throw ApiError.unauthorized("\u0627\u0646\u062A\u0647\u062A \u0635\u0644\u0627\u062D\u064A\u0629 \u0627\u0644\u062C\u0644\u0633\u0629 ", "INVALID_TOKEN");
   }
-  req.user = { id: user.id, email: user.email, role: user.role };
 };
 var authenticate = asyncHandler(
   async (req, _res, next) => {
@@ -1566,11 +1675,44 @@ var optionalAuthenticate = asyncHandler(
 );
 var requireAdmin = (req, _res, next) => {
   if (!req.user) {
-    next(ApiError.unauthorized());
+    next(ApiError.unauthorized("\u064A\u062C\u0628 \u062A\u0633\u062C\u064A\u0644 \u0627\u0644\u062F\u062E\u0648\u0644 \u0644\u0644\u0645\u062A\u0627\u0628\u0639\u0629", "AUTH_REQUIRED"));
     return;
   }
   if (req.user.role !== "admin") {
-    next(ApiError.forbidden());
+    next(ApiError.forbidden("\u063A\u064A\u0631 \u0645\u0635\u0631\u062D \u0644\u0643 \u0628\u0627\u0644\u0648\u0635\u0648\u0644"));
+    return;
+  }
+  next();
+};
+var requireKitchen = (req, _res, next) => {
+  if (!req.user) {
+    next(ApiError.unauthorized("\u064A\u062C\u0628 \u062A\u0633\u062C\u064A\u0644 \u0627\u0644\u062F\u062E\u0648\u0644 \u0644\u0644\u0645\u062A\u0627\u0628\u0639\u0629", "AUTH_REQUIRED"));
+    return;
+  }
+  if (req.user.role !== "kitchen" && req.user.role !== "admin") {
+    next(ApiError.forbidden("\u0647\u0630\u0647 \u0627\u0644\u0635\u0641\u062D\u0629 \u0645\u062E\u0635\u0635\u0629 \u0644\u0641\u0631\u064A\u0642 \u0627\u0644\u0645\u0637\u0628\u062E"));
+    return;
+  }
+  next();
+};
+var requireCashier = (req, _res, next) => {
+  if (!req.user) {
+    next(ApiError.unauthorized("\u064A\u062C\u0628 \u062A\u0633\u062C\u064A\u0644 \u0627\u0644\u062F\u062E\u0648\u0644 \u0644\u0644\u0645\u062A\u0627\u0628\u0639\u0629", "AUTH_REQUIRED"));
+    return;
+  }
+  if (req.user.role !== "cashier" && req.user.role !== "admin") {
+    next(ApiError.forbidden("\u0647\u0630\u0647 \u0627\u0644\u0635\u0641\u062D\u0629 \u0645\u062E\u0635\u0635\u0629 \u0644\u0644\u0643\u0627\u0634\u064A\u0631"));
+    return;
+  }
+  next();
+};
+var requireStaff = (req, _res, next) => {
+  if (!req.user) {
+    next(ApiError.unauthorized("\u064A\u062C\u0628 \u062A\u0633\u062C\u064A\u0644 \u0627\u0644\u062F\u062E\u0648\u0644 \u0644\u0644\u0645\u062A\u0627\u0628\u0639\u0629", "AUTH_REQUIRED"));
+    return;
+  }
+  if (req.user.role !== "admin" && req.user.role !== "kitchen" && req.user.role !== "cashier") {
+    next(ApiError.forbidden("\u063A\u064A\u0631 \u0645\u0635\u0631\u062D \u0644\u0643 \u0628\u062A\u062D\u062F\u064A\u062B \u062D\u0627\u0644\u0629 \u0627\u0644\u0637\u0644\u0628"));
     return;
   }
   next();
@@ -1703,6 +1845,11 @@ var authService = {
     if (!valid) {
       throw ApiError.unauthorized("\u0627\u0644\u0628\u0631\u064A\u062F \u0627\u0644\u0625\u0644\u0643\u062A\u0631\u0648\u0646\u064A \u0623\u0648 \u0643\u0644\u0645\u0629 \u0627\u0644\u0645\u0631\u0648\u0631 \u063A\u064A\u0631 \u0635\u062D\u064A\u062D\u0629");
     }
+    if ((user.role === "kitchen" || user.role === "cashier") && !user.isApproved) {
+      throw ApiError.forbidden(
+        "\u062D\u0633\u0627\u0628\u0643 \u0642\u064A\u062F \u0627\u0644\u0645\u0631\u0627\u062C\u0639\u0629\u060C \u064A\u0631\u062C\u0649 \u0627\u0646\u062A\u0638\u0627\u0631 \u0645\u0648\u0627\u0641\u0642\u0629 \u0627\u0644\u0625\u062F\u0627\u0631\u0629"
+      );
+    }
     return buildAuthResponse(user);
   },
   async getProfile(userId) {
@@ -1713,6 +1860,7 @@ var authService = {
 };
 
 // src/controllers/authController.ts
+var import_bcryptjs2 = __toESM(require("bcryptjs"));
 var authController = {
   async register(req, res) {
     const body2 = req.body;
@@ -1736,6 +1884,61 @@ var authController = {
     const user = requireAuthUser(req);
     const profile = await authService.getProfile(user.id);
     res.json({ success: true, data: { user: profile } });
+  },
+  async approveUser(req, res) {
+    const targetId = Number(req.params.id);
+    const myUser = requireAuthUser(req);
+    if (myUser.role !== "admin") {
+      res.status(403).json({
+        success: false,
+        message: "\u063A\u064A\u0631 \u0645\u0635\u0631\u062D \u0644\u0643 \u0628\u0627\u0644\u0648\u0635\u0648\u0644"
+      });
+      return;
+    }
+    const currentlyApproved = await userRepository.isApproved(targetId);
+    await userRepository.updateApproval(targetId, !currentlyApproved);
+    const updatedUser = await userRepository.findById(targetId);
+    res.json({
+      success: true,
+      message: updatedUser?.isApproved ? "\u062A\u0645 \u0627\u0639\u062A\u0645\u0627\u062F \u0627\u0644\u0645\u0633\u062A\u062E\u062F\u0645" : "\u062A\u0645 \u0631\u0641\u0636 \u0627\u0644\u0645\u0633\u062A\u062E\u062F\u0645",
+      data: { isApproved: updatedUser?.isApproved ?? false }
+    });
+  },
+  async createStaff(req, res) {
+    const { email, password, role } = req.body;
+    const myUser = requireAuthUser(req);
+    if (myUser.role !== "admin") {
+      res.status(403).json({
+        success: false,
+        message: "\u063A\u064A\u0631 \u0645\u0635\u0631\u062D \u0644\u0643 \u0628\u0627\u0644\u0648\u0635\u0648\u0644"
+      });
+      return;
+    }
+    const existing = await userRepository.findByEmail(email);
+    if (existing) {
+      res.status(400).json({
+        success: false,
+        message: "\u0647\u0630\u0627 \u0627\u0644\u0628\u0631\u064A\u062F \u0627\u0644\u0625\u0644\u0643\u062A\u0631\u0648\u0646\u064A \u0645\u0633\u062C\u0644 \u0628\u0627\u0644\u0641\u0639\u0644"
+      });
+      return;
+    }
+    const passwordHash = await import_bcryptjs2.default.hash(password, env.bcryptRounds);
+    const userId = await userRepository.create({
+      name: email.split("@")[0] ?? "\u0645\u0648\u0638\u0641",
+      email: email.toLowerCase(),
+      passwordHash,
+      phone: null,
+      role
+    });
+    const user = await userRepository.findById(userId);
+    if (!user) {
+      throw ApiError.notFound("\u062A\u0639\u0630\u0631 \u0625\u0646\u0634\u0627\u0621 \u062D\u0633\u0627\u0628 \u0627\u0644\u0645\u0648\u0638\u0641");
+    }
+    res.json({
+      success: true,
+      message: "\u062A\u0645 \u0625\u0646\u0634\u0627\u0621 \u062D\u0633\u0627\u0628 \u0627\u0644\u0645\u0648\u0638\u0641 \u0628\u0627\u0646\u062A\u0638\u0627\u0631 \u0627\u0644\u0645\u0648\u0627\u0641\u0642\u0629",
+      data: { id: user.id, email: user.email, role: user.role, isApproved: user.isApproved }
+    });
   }
 };
 
@@ -1756,6 +1959,18 @@ authRoutes.post(
   asyncHandler(authController.login)
 );
 authRoutes.get("/me", authenticate, asyncHandler(authController.me));
+authRoutes.patch(
+  "/users/:id/approve",
+  authenticate,
+  requireAdmin,
+  asyncHandler(authController.approveUser)
+);
+authRoutes.post(
+  "/staff/create",
+  authenticate,
+  requireAdmin,
+  asyncHandler(authController.createStaff)
+);
 
 // src/routes/configRoutes.ts
 var import_express3 = require("express");
@@ -1939,6 +2154,16 @@ orderRoutes.post(
 );
 orderRoutes.get("/", asyncHandler(orderController.listMine));
 orderRoutes.get(
+  "/kitchen",
+  requireKitchen,
+  asyncHandler(orderController.kitchenList)
+);
+orderRoutes.get(
+  "/cashier",
+  requireCashier,
+  asyncHandler(orderController.cashierList)
+);
+orderRoutes.get(
   "/:id",
   orderIdRules,
   validate,
@@ -1946,7 +2171,7 @@ orderRoutes.get(
 );
 orderRoutes.patch(
   "/:id/status",
-  requireAdmin,
+  requireStaff,
   orderStatusRules,
   validate,
   asyncHandler(orderController.updateStatus)
@@ -2158,7 +2383,8 @@ var statements = [
     email VARCHAR(255) NOT NULL,
     password_hash VARCHAR(255) NOT NULL,
     phone VARCHAR(20) NULL,
-    role ENUM('customer', 'admin') NOT NULL DEFAULT 'customer',
+    role ENUM('customer', 'admin', 'kitchen', 'cashier') NOT NULL DEFAULT 'customer',
+    is_approved BOOLEAN NOT NULL DEFAULT FALSE,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     PRIMARY KEY (id),
@@ -2186,9 +2412,10 @@ var statements = [
     total_amount DECIMAL(10, 2) NOT NULL,
     delivery_address TEXT NOT NULL,
     payment_status ENUM('PENDING', 'PAID', 'FAILED', 'REFUNDED') NOT NULL DEFAULT 'PENDING',
-    order_status ENUM('PENDING', 'PREPARING', 'OUT_FOR_DELIVERY', 'DELIVERED', 'CANCELLED') NOT NULL DEFAULT 'PENDING',
+    order_status ENUM('PENDING', 'PREPARING', 'READY', 'OUT_FOR_DELIVERY', 'DELIVERED', 'CANCELLED') NOT NULL DEFAULT 'PENDING',
     payment_id VARCHAR(100) NULL,
     payment_url VARCHAR(1000) NULL,
+    payment_method ENUM('ONLINE','CASH') NOT NULL DEFAULT 'ONLINE',
     notes TEXT NULL,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -2233,21 +2460,314 @@ var statements = [
     CONSTRAINT fk_reservations_user FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE SET NULL
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`
 ];
+var columnMigrations = [
+  {
+    table: "users",
+    column: "is_approved",
+    definition: "BOOLEAN NOT NULL DEFAULT FALSE",
+    after: "role"
+  },
+  {
+    table: "orders",
+    column: "payment_method",
+    definition: "ENUM('ONLINE','CASH') NOT NULL DEFAULT 'ONLINE'",
+    after: "payment_url"
+  }
+];
+var columnExists = async (connection, table, column) => {
+  const rows = await queryRows(
+    connection,
+    `SELECT COLUMN_NAME
+       FROM information_schema.COLUMNS
+      WHERE TABLE_SCHEMA = DATABASE()
+        AND TABLE_NAME = ?
+        AND COLUMN_NAME = ?
+      LIMIT 1`,
+    [table, column]
+  );
+  return rows.length > 0;
+};
+var runSchemaStatement = async (connection, sql) => {
+  try {
+    await connection.query(sql);
+    return true;
+  } catch (err) {
+    console.warn("Schema init note:", err.message);
+    return false;
+  }
+};
 var initializeSchema = async () => {
   const connection = await pool.getConnection();
   try {
     for (const statement of statements) {
-      await connection.query(statement);
+      await runSchemaStatement(connection, statement);
     }
+    for (const migration of columnMigrations) {
+      if (await columnExists(connection, migration.table, migration.column)) {
+        continue;
+      }
+      const after = migration.after ? ` AFTER \`${migration.after}\`` : "";
+      const added = await runSchemaStatement(
+        connection,
+        `ALTER TABLE \`${migration.table}\` ADD COLUMN \`${migration.column}\` ${migration.definition}${after}`
+      );
+      if (added) {
+        console.info(
+          `Schema init: added column ${migration.table}.${migration.column}`
+        );
+      }
+    }
+    await runSchemaStatement(
+      connection,
+      `ALTER TABLE users MODIFY COLUMN role ENUM('admin','kitchen','cashier','customer') NOT NULL DEFAULT 'customer'`
+    );
+    await runSchemaStatement(
+      connection,
+      `ALTER TABLE orders MODIFY COLUMN order_status ENUM('PENDING','PREPARING','READY','OUT_FOR_DELIVERY','DELIVERED','CANCELLED') NOT NULL DEFAULT 'PENDING'`
+    );
+    await runSchemaStatement(
+      connection,
+      `UPDATE users SET is_approved = TRUE WHERE role IN ('admin','customer') AND is_approved = FALSE`
+    );
   } finally {
     connection.release();
   }
 };
 
+// src/db/seed.ts
+var import_bcryptjs3 = __toESM(require("bcryptjs"));
+var menuSeed = [
+  {
+    name: "\u0645\u0646\u062F\u064A \u0644\u062D\u0645 \u0636\u0627\u0646\u064A",
+    nameEn: "Lamb Mandi",
+    description: "\u0644\u062D\u0645 \u0636\u0627\u0646\u064A \u0637\u0631\u064A \u0645\u0637\u0628\u0648\u062E \u0641\u064A \u0627\u0644\u062A\u0646\u0648\u0631 \u0639\u0644\u0649 \u0627\u0644\u062D\u062C\u0631 \u0645\u0639 \u0623\u0631\u0632 \u0628\u0633\u0645\u062A\u064A \u0645\u0639\u0637\u0651\u0631",
+    descriptionEn: "Tender lamb slow-cooked in a stone tandoor with spiced basmati rice",
+    price: 320,
+    category: "mandi",
+    imageUrl: "https://images.unsplash.com/photo-1544025162-d76694265947?auto=format&fit=crop&w=900&q=80"
+  },
+  {
+    name: "\u0645\u0646\u062F\u064A \u062F\u062C\u0627\u062C",
+    nameEn: "Chicken Mandi",
+    description: "\u0646\u0635\u0641 \u062F\u062C\u0627\u062C\u0629 \u0628\u0644\u062F\u064A\u0629 \u0645\u062A\u0628\u0651\u0644\u0629 \u0628\u0627\u0644\u0628\u0647\u0627\u0631\u0627\u062A \u0627\u0644\u062D\u0636\u0631\u0645\u064A\u0629 \u0645\u0639 \u0623\u0631\u0632 \u0627\u0644\u0645\u0646\u062F\u064A",
+    descriptionEn: "Free-range chicken marinated in Hadrami spices with mandi rice",
+    price: 180,
+    category: "mandi",
+    imageUrl: "https://images.unsplash.com/photo-1555939594-58d7cb561ad1?auto=format&fit=crop&w=900&q=80"
+  },
+  {
+    name: "\u0645\u0646\u062F\u064A \u0644\u062D\u0645 \u0628\u0642\u0631\u064A",
+    nameEn: "Beef Mandi",
+    description: "\u0642\u0637\u0639 \u0644\u062D\u0645 \u0628\u0642\u0631\u064A \u0645\u0637\u0647\u0648\u0629 \u0628\u0628\u0637\u0621 \u062D\u062A\u0649 \u0627\u0644\u0637\u0631\u0627\u0648\u0629 \u0645\u0639 \u0623\u0631\u0632 \u0628\u0633\u0645\u062A\u064A",
+    descriptionEn: "Slow-cooked beef cuts served over fragrant basmati rice",
+    price: 260,
+    category: "mandi",
+    imageUrl: "https://images.unsplash.com/photo-1547592180-85f173990554?auto=format&fit=crop&w=900&q=80"
+  },
+  {
+    name: "\u0645\u062F\u0641\u0648\u0646 \u0644\u062D\u0645",
+    nameEn: "Lamb Madhbi",
+    description: "\u0644\u062D\u0645 \u0645\u0634\u0648\u064A \u0639\u0644\u0649 \u0627\u0644\u062D\u062C\u0631 \u0627\u0644\u062D\u0627\u0631 \u0628\u0646\u0643\u0647\u0629 \u0645\u062F\u062E\u0651\u0646\u0629 \u0645\u0645\u064A\u0632\u0629",
+    descriptionEn: "Lamb grilled on hot stone with a distinctive smoky flavour",
+    price: 350,
+    category: "madhbi",
+    imageUrl: "https://images.unsplash.com/photo-1504674900247-0877df9cc836?auto=format&fit=crop&w=900&q=80"
+  },
+  {
+    name: "\u0645\u062F\u0641\u0648\u0646 \u062F\u062C\u0627\u062C",
+    nameEn: "Chicken Madhbi",
+    description: "\u062F\u062C\u0627\u062C \u0645\u062A\u0628\u0651\u0644 \u0628\u0627\u0644\u0623\u0639\u0634\u0627\u0628 \u0648\u0627\u0644\u0644\u064A\u0645\u0648\u0646 \u0627\u0644\u0623\u0633\u0648\u062F \u0645\u0634\u0648\u064A \u0639\u0644\u0649 \u0627\u0644\u062D\u062C\u0631",
+    descriptionEn: "Chicken marinated with herbs and black lime, stone-grilled",
+    price: 200,
+    category: "madhbi",
+    imageUrl: "https://images.unsplash.com/photo-1600891964092-4316c288032e?auto=format&fit=crop&w=900&q=80"
+  },
+  {
+    name: "\u0645\u0638\u0644\u0629 \u0644\u062D\u0645",
+    nameEn: "Lamb Mathloutha",
+    description: "\u0644\u062D\u0645 \u0645\u0637\u0628\u0648\u062E \u0645\u0639 \u0627\u0644\u062E\u0636\u0627\u0631 \u0648\u0627\u0644\u0628\u0647\u0627\u0631\u0627\u062A \u0648\u0627\u0644\u0623\u0631\u0632 \u0639\u0644\u0649 \u0627\u0644\u0637\u0631\u064A\u0642\u0629 \u0627\u0644\u062D\u0636\u0631\u0645\u064A\u0629",
+    descriptionEn: "Lamb cooked with vegetables, spices and rice, Hadrami style",
+    price: 300,
+    category: "mathloutha",
+    imageUrl: "https://images.unsplash.com/photo-1547592166-23ac45744acd?auto=format&fit=crop&w=900&q=80"
+  },
+  {
+    name: "\u0645\u0638\u0644\u0629 \u062F\u062C\u0627\u062C",
+    nameEn: "Chicken Mathloutha",
+    description: "\u062F\u062C\u0627\u062C \u0648\u0623\u0631\u0632 \u0628\u0627\u0644\u0628\u0647\u0627\u0631\u0627\u062A \u0627\u0644\u062D\u0636\u0631\u0645\u064A\u0629 \u0645\u0639 \u0637\u0628\u0642 \u062C\u0627\u0646\u0628\u064A \u0645\u0646 \u0627\u0644\u0645\u0631\u0642",
+    descriptionEn: "Chicken and rice with Hadrami spices and a side of broth",
+    price: 170,
+    category: "mathloutha",
+    imageUrl: "https://images.unsplash.com/photo-1567620905732-2d1ec7ab7445?auto=format&fit=crop&w=900&q=80"
+  },
+  {
+    name: "\u0633\u0644\u0637\u0629 \u062D\u0636\u0631\u0645\u0648\u062A",
+    nameEn: "Hadramout Salad",
+    description: "\u062E\u0636\u0631\u0648\u0627\u062A \u0637\u0627\u0632\u062C\u0629 \u0645\u0639 \u062F\u0628\u0633 \u0627\u0644\u0631\u0645\u0627\u0646 \u0648\u0627\u0644\u0644\u064A\u0645\u0648\u0646",
+    descriptionEn: "Fresh vegetables with pomegranate molasses and lemon",
+    price: 45,
+    category: "appetizers",
+    imageUrl: "https://images.unsplash.com/photo-1512621776951-a57141f2eefd?auto=format&fit=crop&w=900&q=80"
+  },
+  {
+    name: "\u0634\u0648\u0631\u0628\u0629 \u0639\u062F\u0633",
+    nameEn: "Lentil Soup",
+    description: "\u0634\u0648\u0631\u0628\u0629 \u0639\u062F\u0633 \u062F\u0627\u0641\u0626\u0629 \u0645\u0639 \u0627\u0644\u0643\u0645\u0648\u0646 \u0648\u0627\u0644\u0644\u064A\u0645\u0648\u0646",
+    descriptionEn: "Warm lentil soup with cumin and lemon",
+    price: 35,
+    category: "appetizers",
+    imageUrl: "https://images.unsplash.com/photo-1547592180-85f173990554?auto=format&fit=crop&w=900&q=80"
+  },
+  {
+    name: "\u0633\u0645\u0628\u0648\u0633\u0629 \u0644\u062D\u0645",
+    nameEn: "Meat Samosas",
+    description: "\u062B\u0644\u0627\u062B \u062D\u0628\u0627\u062A \u0633\u0645\u0628\u0648\u0633\u0629 \u0645\u0642\u0631\u0645\u0634\u0629 \u0645\u062D\u0634\u0648\u0629 \u0628\u0627\u0644\u0644\u062D\u0645 \u0627\u0644\u0645\u0641\u0631\u0648\u0645",
+    descriptionEn: "Three crispy pastries filled with seasoned minced meat",
+    price: 60,
+    category: "appetizers",
+    imageUrl: "https://images.unsplash.com/photo-1601050690597-df0568f70950?auto=format&fit=crop&w=900&q=80"
+  },
+  {
+    name: "\u0644\u064A\u0645\u0648\u0646 \u0628\u0627\u0644\u0646\u0639\u0646\u0627\u0639",
+    nameEn: "Mint Lemonade",
+    description: "\u0639\u0635\u064A\u0631 \u0644\u064A\u0645\u0648\u0646 \u0637\u0627\u0632\u062C \u0645\u0639 \u0627\u0644\u0646\u0639\u0646\u0627\u0639 \u0627\u0644\u0628\u0644\u062F\u064A",
+    descriptionEn: "Fresh lemon juice blended with mint",
+    price: 35,
+    category: "drinks",
+    imageUrl: "https://images.unsplash.com/photo-1513558161293-cdaf765ed2fd?auto=format&fit=crop&w=900&q=80"
+  },
+  {
+    name: "\u0634\u0627\u064A \u062D\u0636\u0631\u0645\u0648\u062A\u064A",
+    nameEn: "Hadrami Tea",
+    description: "\u0634\u0627\u064A \u0628\u0627\u0644\u062D\u0644\u064A\u0628 \u0648\u0627\u0644\u0647\u064A\u0644 \u0648\u0627\u0644\u0642\u0631\u0646\u0641\u0644",
+    descriptionEn: "Black tea brewed with milk, cardamom and cloves",
+    price: 20,
+    category: "drinks",
+    imageUrl: "https://images.unsplash.com/photo-1544787219-7f47ccb76574?auto=format&fit=crop&w=900&q=80"
+  },
+  {
+    name: "\u0643\u0646\u0627\u0641\u0629 \u0628\u0627\u0644\u0642\u0634\u0637\u0629",
+    nameEn: "Kunafa with Cream",
+    description: "\u0643\u0646\u0627\u0641\u0629 \u0630\u0647\u0628\u064A\u0629 \u0628\u0627\u0644\u0642\u0634\u0637\u0629 \u0627\u0644\u0637\u0627\u0632\u062C\u0629 \u0648\u0627\u0644\u0642\u0637\u0631",
+    descriptionEn: "Golden kunafa filled with fresh cream and syrup",
+    price: 75,
+    category: "desserts",
+    imageUrl: "https://images.unsplash.com/photo-1551024506-0bccd828d307?auto=format&fit=crop&w=900&q=80"
+  },
+  {
+    name: "\u0645\u0647\u0644\u0628\u064A\u0629 \u062D\u0636\u0631\u0645\u064A\u0629",
+    nameEn: "Hadrami Muhallebi",
+    description: "\u0645\u0647\u0644\u0628\u064A\u0629 \u0646\u0627\u0639\u0645\u0629 \u0628\u0627\u0644\u0641\u0633\u062A\u0642 \u0648\u0627\u0644\u0648\u0631\u062F",
+    descriptionEn: "Silky milk pudding topped with pistachio and rose",
+    price: 40,
+    category: "desserts",
+    imageUrl: "https://images.unsplash.com/photo-1488477181946-6428a0291777?auto=format&fit=crop&w=900&q=80"
+  }
+];
+var ensureAccount = async (account) => {
+  if (account.password.length < 8) {
+    throw new Error(
+      `${account.role.toUpperCase()}_PASSWORD must be at least 8 characters`
+    );
+  }
+  const email = account.email.trim().toLowerCase();
+  const [rows] = await pool.execute(
+    "SELECT id FROM users WHERE email = ? LIMIT 1",
+    [email]
+  );
+  if (rows.length === 0) {
+    const passwordHash = await import_bcryptjs3.default.hash(account.password, env.bcryptRounds);
+    await pool.execute(
+      `INSERT INTO users (name, email, password_hash, phone, role, is_approved)
+       VALUES (?, ?, ?, NULL, ?, TRUE)`,
+      [account.name, email, passwordHash, account.role]
+    );
+    return;
+  }
+  if (account.updateExistingPassword) {
+    const passwordHash = await import_bcryptjs3.default.hash(account.password, env.bcryptRounds);
+    await pool.execute(
+      `UPDATE users
+          SET name = ?, password_hash = ?, role = ?, is_approved = TRUE
+        WHERE email = ?`,
+      [account.name, passwordHash, account.role, email]
+    );
+    return;
+  }
+  await pool.execute(
+    "UPDATE users SET is_approved = TRUE WHERE email = ?",
+    [email]
+  );
+};
+var ensureDefaultAccounts = async () => {
+  await ensureAccount({
+    name: env.admin.name,
+    email: env.admin.email,
+    password: env.admin.password,
+    role: "admin",
+    updateExistingPassword: false
+  });
+  await ensureAccount({
+    name: "\u0641\u0631\u064A\u0642 \u0627\u0644\u0645\u0637\u0628\u062E",
+    email: env.staff.kitchen.email,
+    password: env.staff.kitchen.password,
+    role: "kitchen",
+    updateExistingPassword: true
+  });
+  await ensureAccount({
+    name: "\u0641\u0631\u064A\u0642 \u0627\u0644\u0643\u0627\u0634\u064A\u0631",
+    email: env.staff.cashier.email,
+    password: env.staff.cashier.password,
+    role: "cashier",
+    updateExistingPassword: true
+  });
+};
+var seedDatabase = async () => {
+  await ensureDefaultAccounts();
+  const [menuCountRows] = await pool.execute(
+    "SELECT COUNT(*) AS total FROM menu_items"
+  );
+  const menuCount = Number(menuCountRows[0]?.total ?? 0);
+  if (menuCount === 0) {
+    for (const item of menuSeed) {
+      await pool.execute(
+        `INSERT INTO menu_items
+           (name, name_en, description, description_en, price, category, image_url, is_available)
+         VALUES (?, ?, ?, ?, ?, ?, ?, TRUE)`,
+        [
+          item.name,
+          item.nameEn,
+          item.description,
+          item.descriptionEn,
+          item.price,
+          item.category,
+          item.imageUrl
+        ]
+      );
+    }
+  }
+};
+var runSeed = async () => {
+  await initializeSchema();
+  await seedDatabase();
+};
+if (require.main === module) {
+  void runSeed().then(() => {
+    console.log("Database seeded successfully");
+    process.exitCode = 0;
+  }).catch((error) => {
+    console.error("Seeding failed:", error);
+    process.exitCode = 1;
+  }).finally(() => {
+    void pool.end();
+  });
+}
+
 // src/index.ts
 var start = async () => {
   await ensureDatabase();
   await initializeSchema();
+  await ensureDefaultAccounts();
   await verifyDatabaseConnection();
   const app = createApp();
   const server = app.listen(env.port, () => {

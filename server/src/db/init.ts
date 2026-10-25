@@ -1,11 +1,13 @@
 import { ensureDatabase } from './bootstrap';
 import { initializeSchema } from './schema';
+import { ensureDefaultAccounts } from './seed';
 import { pool } from './pool';
 
 const run = async (): Promise<void> => {
   await ensureDatabase();
   await initializeSchema();
-  console.log('Database schema initialized successfully');
+  await ensureDefaultAccounts();
+  console.log('Database schema and default accounts initialized successfully');
 };
 
 void run()

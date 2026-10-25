@@ -25,6 +25,14 @@ const buildAdminQuery = (filters: AdminOrderFilters): string => {
   return query ? `?${query}` : '';
 };
 
+const buildPageQuery = (page?: number, limit?: number): string => {
+  const params = new URLSearchParams();
+  if (page) params.set('page', String(page));
+  if (limit) params.set('limit', String(limit));
+  const query = params.toString();
+  return query ? `?${query}` : '';
+};
+
 export const orderApi = {
   async create(input: CreateOrderInput): Promise<OrderDto> {
     const data = await request<{ order: OrderDto }>('/orders', {
@@ -36,6 +44,18 @@ export const orderApi = {
 
   listMine(): Promise<Paginated<OrderDto>> {
     return request<Paginated<OrderDto>>('/orders?limit=50');
+  },
+
+  listKitchen(page?: number, limit?: number): Promise<Paginated<OrderDto>> {
+    return request<Paginated<OrderDto>>(
+      `/orders/kitchen${buildPageQuery(page, limit)}`,
+    );
+  },
+
+  listCashier(page?: number, limit?: number): Promise<Paginated<OrderDto>> {
+    return request<Paginated<OrderDto>>(
+      `/orders/cashier${buildPageQuery(page, limit)}`,
+    );
   },
 
   async getById(id: number): Promise<OrderDto> {

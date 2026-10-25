@@ -10,7 +10,7 @@ export type {
   ReservationStatus,
 } from './config';
 
-export type Role = 'customer' | 'admin';
+export type Role = 'customer' | 'admin' | 'kitchen' | 'cashier';
 
 export interface UserDto {
   id: number;
@@ -19,6 +19,7 @@ export interface UserDto {
   phone: string | null;
   role: Role;
   createdAt: string;
+  isApproved: boolean;
 }
 
 export interface MenuItemDto {
@@ -62,6 +63,7 @@ export interface OrderDto {
   items: OrderItemDto[];
   createdAt: string;
   updatedAt: string;
+  paymentMethod: 'ONLINE' | 'CASH';
 }
 
 export interface ReservationDto {
@@ -98,6 +100,7 @@ export interface CreateOrderInput {
   items: CreateOrderItemInput[];
   deliveryAddress: string;
   notes?: string;
+  paymentMethod?: 'ONLINE' | 'CASH';
 }
 
 export interface CreateReservationInput {

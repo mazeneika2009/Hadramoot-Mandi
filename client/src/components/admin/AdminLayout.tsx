@@ -6,6 +6,8 @@ const tabs = [
   { to: '/admin/menu', label: 'إدارة المنيو' },
   { to: '/admin/orders', label: 'الطلبات' },
   { to: '/admin/reservations', label: 'الحجوزات' },
+  { to: '/kitchen', label: 'المطبخ' },
+  { to: '/cashier', label: 'الكاشير' },
 ];
 
 export const AdminLayout = () => {
@@ -20,7 +22,7 @@ export const AdminLayout = () => {
             أهلاً، {user?.name}
           </h1>
           <p className="mt-2 text-sm text-night/50">
-            إدارة كاملة للمنيو والطلبات والحجوزات من مكان واحد.
+            إدارة المنيو والطلبات والحجوزات، ومتابعة المطبخ والكاشير من مكان واحد.
           </p>
         </div>
         <div className="rounded-2xl border border-sand-200 bg-white px-4 py-3 text-xs">

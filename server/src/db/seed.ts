@@ -1,4 +1,5 @@
 import bcrypt from 'bcryptjs';
+import type { RowDataPacket } from 'mysql2/promise';
 import { pool } from './pool';
 import { env } from '../config/env';
 import { initializeSchema } from './schema';
@@ -156,26 +157,88 @@ const menuSeed: readonly MenuSeed[] = [
   },
 ];
 
-export const seedDatabase = async (): Promise<void> => {
-  if (env.admin.password.length < 8) {
-    throw new Error('ADMIN_PASSWORD must be at least 8 characters to seed an admin');
-  }
+interface DefaultAccount {
+  name: string;
+  email: string;
+  password: string;
+  role: 'admin' | 'kitchen' | 'cashier';
+  updateExistingPassword: boolean;
+}
 
-  const [adminRows] = await pool.execute<import('mysql2').RowDataPacket[]>(
-    'SELECT id FROM users WHERE email = ? LIMIT 1',
-    [env.admin.email.toLowerCase()],
-  );
-
-  if (adminRows.length === 0) {
-    const passwordHash = await bcrypt.hash(env.admin.password, env.bcryptRounds);
-    await pool.execute(
-      `INSERT INTO users (name, email, password_hash, phone, role)
-       VALUES (?, ?, ?, ?, 'admin')`,
-      [env.admin.name, env.admin.email.toLowerCase(), passwordHash, null],
+const ensureAccount = async (account: DefaultAccount): Promise<void> => {
+  if (account.password.length < 8) {
+    throw new Error(
+      `${account.role.toUpperCase()}_PASSWORD must be at least 8 characters`,
     );
   }
 
-  const [menuCountRows] = await pool.execute<import('mysql2').RowDataPacket[]>(
+  const email = account.email.trim().toLowerCase();
+  const [rows] = await pool.execute<RowDataPacket[]>(
+    'SELECT id FROM users WHERE email = ? LIMIT 1',
+    [email],
+  );
+
+  if (rows.length === 0) {
+    const passwordHash = await bcrypt.hash(account.password, env.bcryptRounds);
+    await pool.execute(
+      `INSERT INTO users (name, email, password_hash, phone, role, is_approved)
+       VALUES (?, ?, ?, NULL, ?, TRUE)`,
+      [account.name, email, passwordHash, account.role],
+    );
+    return;
+  }
+
+  if (account.updateExistingPassword) {
+    const passwordHash = await bcrypt.hash(account.password, env.bcryptRounds);
+    await pool.execute(
+      `UPDATE users
+          SET name = ?, password_hash = ?, role = ?, is_approved = TRUE
+        WHERE email = ?`,
+      [account.name, passwordHash, account.role, email],
+    );
+    return;
+  }
+
+  // Existing installations may predate the is_approved column.
+  await pool.execute(
+    'UPDATE users SET is_approved = TRUE WHERE email = ?',
+    [email],
+  );
+};
+
+/**
+ * Creates or refreshes the env-configured admin and staff accounts.
+ * Staff credentials come from KITCHEN_* / CASHIER_* variables so deployments
+ * can rotate them without touching the database.
+ */
+export const ensureDefaultAccounts = async (): Promise<void> => {
+  await ensureAccount({
+    name: env.admin.name,
+    email: env.admin.email,
+    password: env.admin.password,
+    role: 'admin',
+    updateExistingPassword: false,
+  });
+  await ensureAccount({
+    name: 'فريق المطبخ',
+    email: env.staff.kitchen.email,
+    password: env.staff.kitchen.password,
+    role: 'kitchen',
+    updateExistingPassword: true,
+  });
+  await ensureAccount({
+    name: 'فريق الكاشير',
+    email: env.staff.cashier.email,
+    password: env.staff.cashier.password,
+    role: 'cashier',
+    updateExistingPassword: true,
+  });
+};
+
+export const seedDatabase = async (): Promise<void> => {
+  await ensureDefaultAccounts();
+
+  const [menuCountRows] = await pool.execute<RowDataPacket[]>(
     'SELECT COUNT(*) AS total FROM menu_items',
   );
   const menuCount = Number(menuCountRows[0]?.total ?? 0);

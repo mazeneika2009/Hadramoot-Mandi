@@ -9,6 +9,7 @@ export interface AuthUser {
   id: number;
   email: string;
   role: Role;
+  isApproved?: boolean;
 }
 
 export interface UserRecord {
@@ -19,6 +20,7 @@ export interface UserRecord {
   phone: string | null;
   role: Role;
   createdAt: string;
+  isApproved: boolean;
 }
 
 export interface MenuItemRecord {
@@ -48,6 +50,7 @@ export interface OrderRecord {
   paymentId: string | null;
   paymentUrl: string | null;
   notes: string | null;
+  paymentMethod: 'ONLINE' | 'CASH';
   createdAt: string;
   updatedAt: string;
 }

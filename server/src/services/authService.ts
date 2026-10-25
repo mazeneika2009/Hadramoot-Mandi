@@ -55,6 +55,16 @@ export const authService = {
       throw ApiError.unauthorized('البريد الإلكتروني أو كلمة المرور غير صحيحة');
     }
 
+    // Staff accounts must be approved by an administrator before they can log in.
+    if (
+      (user.role === 'kitchen' || user.role === 'cashier') &&
+      !user.isApproved
+    ) {
+      throw ApiError.forbidden(
+        'حسابك قيد المراجعة، يرجى انتظار موافقة الإدارة',
+      );
+    }
+
     return buildAuthResponse(user);
   },
 

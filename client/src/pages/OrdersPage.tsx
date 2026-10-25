@@ -6,7 +6,9 @@ import {
   paymentStatuses,
 } from '@shared/config';
 import type { OrderDto } from '@shared/api';
+import { getStoredToken } from '../api/client';
 import { orderApi } from '../api/orders';
+import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
 import { Alert, EmptyState, Spinner, StatusBadge } from '../components/ui/Feedback';
 import { OrderStatusTimeline } from '../components/orders/OrderStatusTimeline';
@@ -54,7 +56,12 @@ export const OrdersPage = () => {
   const [searchParams] = useSearchParams();
   const paymentNoticeShown = useRef(false);
 
+  const { isAuthenticated, loading: authLoading } = useAuth();
+
   const loadOrders = useCallback(async (silent = false) => {
+    // Guard: do not fetch if the auth state is still settling, the user is not
+    // authenticated, or no token is available yet.
+    if (authLoading || !isAuthenticated || !getStoredToken()) return;
     if (!silent) setLoading(true);
     setRefreshing(true);
     setError(null);
@@ -67,15 +74,17 @@ export const OrdersPage = () => {
       setLoading(false);
       setRefreshing(false);
     }
-  }, []);
+  }, [isAuthenticated, authLoading]);
 
   useEffect(() => {
+    // Only start loading orders once the auth state is stable.
+    if (!isAuthenticated || authLoading) return;
     void loadOrders();
     const timer = window.setInterval(() => {
       if (!document.hidden) void loadOrders(true);
     }, 30000);
     return () => window.clearInterval(timer);
-  }, [loadOrders]);
+  }, [isAuthenticated, authLoading, loadOrders]);
 
   useEffect(() => {
     if (searchParams.get('payment') === 'success' && !paymentNoticeShown.current) {

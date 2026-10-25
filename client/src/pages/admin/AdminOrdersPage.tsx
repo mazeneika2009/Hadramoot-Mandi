@@ -13,7 +13,9 @@ import type {
   PaginationMeta,
   PaymentStatus,
 } from '@shared/api';
+import { getStoredToken } from '../../api/client';
 import { orderApi } from '../../api/orders';
+import { useAuth } from '../../context/AuthContext';
 import { useToast } from '../../context/ToastContext';
 import {
   Alert,
@@ -67,9 +69,11 @@ export const AdminOrdersPage = () => {
   const [updatingId, setUpdatingId] = useState<number | null>(null);
   const [expandedId, setExpandedId] = useState<number | null>(null);
   const { showToast } = useToast();
+  const { isAuthenticated, loading: authLoading } = useAuth();
 
   const loadOrders = useCallback(
     async (options: { silent?: boolean } = {}) => {
+      if (authLoading || !isAuthenticated || !getStoredToken()) return;
       if (options.silent) {
         setRefreshing(true);
       } else {
@@ -93,19 +97,21 @@ export const AdminOrdersPage = () => {
         setRefreshing(false);
       }
     },
-    [page, paymentFilter, statusFilter],
+    [authLoading, isAuthenticated, page, paymentFilter, statusFilter],
   );
 
   useEffect(() => {
+    if (authLoading || !isAuthenticated) return;
     void loadOrders();
-  }, [loadOrders]);
+  }, [authLoading, isAuthenticated, loadOrders]);
 
   useEffect(() => {
+    if (authLoading || !isAuthenticated) return;
     const interval = window.setInterval(() => {
       void loadOrders({ silent: true });
     }, 30_000);
     return () => window.clearInterval(interval);
-  }, [loadOrders]);
+  }, [authLoading, isAuthenticated, loadOrders]);
 
   const handleStatusChange = async (
     order: OrderDto,

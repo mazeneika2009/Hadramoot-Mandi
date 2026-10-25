@@ -43,6 +43,7 @@ export const CheckoutPage = () => {
 
     setSubmitting(true);
     try {
+      const normalizedPaymentMethod = paymentMethod === 'cash' ? 'CASH' : 'ONLINE';
       const order = await orderApi.create({
         items: lines.map((line) => ({
           menuItemId: line.item.id,
@@ -50,6 +51,7 @@ export const CheckoutPage = () => {
         })),
         deliveryAddress: deliveryAddress.trim(),
         notes: notes.trim() || undefined,
+        paymentMethod: normalizedPaymentMethod,
       });
       setCreatedOrder(order);
       clearCart();

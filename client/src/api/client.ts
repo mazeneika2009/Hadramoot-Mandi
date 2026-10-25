@@ -26,12 +26,15 @@ export const request = async <T>(
   path: string,
   options: RequestInit = {},
 ): Promise<T> => {
+  // جلب التوكن بالطريقة الموحدة للمشروع
   const token = getStoredToken();
+
   const headers = new Headers(options.headers);
 
   if (options.body && !(options.body instanceof FormData)) {
     headers.set('Content-Type', 'application/json');
   }
+  
   if (token) {
     headers.set('Authorization', `Bearer ${token}`);
   }
@@ -58,8 +61,15 @@ export const request = async <T>(
 
   if (!response.ok || !body || body.success === false) {
     const code = body && body.success === false ? body.code : undefined;
+    const isAuthAttempt =
+      path === '/auth/login' || path === '/auth/register';
 
-    if (response.status === 401 && token) {
+    if (
+      response.status === 401 &&
+      token &&
+      !isAuthAttempt &&
+      getStoredToken() === token
+    ) {
       localStorage.removeItem(appConfig.storageKeys.token);
       localStorage.removeItem(appConfig.storageKeys.user);
       notifyAuthExpired();
@@ -71,8 +81,10 @@ export const request = async <T>(
         : response.status === 401
           ? 'يجب تسجيل الدخول للمتابعة'
           : 'تعذر إتمام الطلب، حاول مرة أخرى';
+          
     const errors =
       body && body.success === false && body.errors ? body.errors : undefined;
+      
     throw new ApiClientError(response.status, message, errors, code);
   }
 

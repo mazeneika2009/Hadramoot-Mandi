@@ -1,6 +1,11 @@
 import { Router } from 'express';
 import { orderController } from '../controllers/orderController';
-import { authenticate, requireAdmin } from '../middleware/auth';
+import {
+  authenticate,
+  requireCashier,
+  requireKitchen,
+  requireStaff,
+} from '../middleware/auth';
 import { checkoutLimiter } from '../middleware/rateLimit';
 import {
   orderIdRules,
@@ -24,6 +29,20 @@ orderRoutes.post(
 
 orderRoutes.get('/', asyncHandler(orderController.listMine));
 
+// Static routes must be declared before "/:id" so that "kitchen" and
+// "cashier" are not interpreted as order identifiers.
+orderRoutes.get(
+  '/kitchen',
+  requireKitchen,
+  asyncHandler(orderController.kitchenList),
+);
+
+orderRoutes.get(
+  '/cashier',
+  requireCashier,
+  asyncHandler(orderController.cashierList),
+);
+
 orderRoutes.get(
   '/:id',
   orderIdRules,
@@ -33,7 +52,7 @@ orderRoutes.get(
 
 orderRoutes.patch(
   '/:id/status',
-  requireAdmin,
+  requireStaff,
   orderStatusRules,
   validate,
   asyncHandler(orderController.updateStatus),

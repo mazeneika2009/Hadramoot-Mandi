@@ -88,10 +88,12 @@ export const orderService = {
         });
       }
 
+      const paymentMethod = input.paymentMethod ?? 'ONLINE';
       orderId = await orderRepository.insertOrder(connection, {
         userId,
         totalAmount,
         deliveryAddress: input.deliveryAddress,
+        paymentMethod,
         notes: input.notes?.trim() || null,
       });
 
@@ -189,5 +191,47 @@ export const orderService = {
 
   async getStats(): Promise<AdminStats> {
     return orderRepository.getStats();
+  },
+
+  async listKitchen(
+    page: { page: number; limit: number; offset: number },
+  ): Promise<Paginated<OrderDto>> {
+    const { orders, total } = await orderRepository.list(
+      { userId: undefined, status: ['PENDING', 'PREPARING'] },
+      page,
+    );
+    const items = await orderRepository.findItemsByOrderIds(
+      orders.map((order) => order.id),
+    );
+    return {
+      items: groupItems(orders, items),
+      pagination: {
+        page: page.page,
+        limit: page.limit,
+        total,
+        totalPages: Math.ceil(total / page.limit),
+      },
+    };
+  },
+
+  async listCashier(
+    page: { page: number; limit: number; offset: number },
+  ): Promise<Paginated<OrderDto>> {
+    const { orders, total } = await orderRepository.list(
+      { userId: undefined, status: ['READY'] },
+      page,
+    );
+    const items = await orderRepository.findItemsByOrderIds(
+      orders.map((order) => order.id),
+    );
+    return {
+      items: groupItems(orders, items),
+      pagination: {
+        page: page.page,
+        limit: page.limit,
+        total,
+        totalPages: Math.ceil(total / page.limit),
+      },
+    };
   },
 };

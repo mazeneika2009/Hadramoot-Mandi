@@ -101,13 +101,14 @@ export interface StatusMeta {
 export const orderStatuses = {
   PENDING: { ar: 'في الانتظار', en: 'Pending', color: '#d97706', step: 1 },
   PREPARING: { ar: 'قيد التحضير', en: 'Preparing', color: '#2563eb', step: 2 },
+  READY: { ar: 'جاهز', en: 'Ready', color: '#10b981', step: 3 },
   OUT_FOR_DELIVERY: {
     ar: 'خرج للتوصيل',
     en: 'Out for delivery',
     color: '#7c3aed',
-    step: 3,
+    step: 4,
   },
-  DELIVERED: { ar: 'تم التسليم', en: 'Delivered', color: '#059669', step: 4 },
+  DELIVERED: { ar: 'تم التسليم', en: 'Delivered', color: '#059669', step: 5 },
   CANCELLED: { ar: 'ملغي', en: 'Cancelled', color: '#dc2626', step: 0 },
 } as const satisfies Record<string, StatusMeta>;
 
@@ -139,6 +140,7 @@ export const paymentMethods = [
   { id: 'wallet', ar: 'فودافون كاش', en: 'Vodafone Cash' },
   { id: 'fawry', ar: 'فوري', en: 'Fawry' },
   { id: 'card', ar: 'بطاقة بنكية', en: 'Bank card' },
+  { id: 'cash', ar: 'Cash', en: 'Cash' },
 ] as const;
 
 export interface PublicAppConfig {

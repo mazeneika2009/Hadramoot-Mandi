@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Link, useLocation } from 'react-router-dom';
+import { Link, NavLink, useLocation } from 'react-router-dom';
 import { brand } from '@shared/config';
 import { useAuth } from '../../context/AuthContext';
 import { useCart } from '../../context/CartContext';
@@ -11,11 +11,38 @@ const navLinks = [
   { to: '/orders', label: 'طلباتي' },
 ];
 
+const workspaceLinkClass = ({ isActive }: { isActive: boolean }): string =>
+  `rounded-full px-4 py-2 text-sm font-semibold transition ${
+    isActive
+      ? 'bg-emerald-deep text-white shadow-sm'
+      : 'text-emerald-deep/75 hover:bg-emerald-deep/5 hover:text-emerald-deep'
+  }`;
+
+const mobileWorkspaceLinkClass = ({ isActive }: { isActive: boolean }): string =>
+  `rounded-xl px-4 py-3 text-sm font-bold transition ${
+    isActive
+      ? 'bg-emerald-deep text-white'
+      : 'text-emerald-deep hover:bg-emerald-deep/5'
+  }`;
+
 export const Navbar = () => {
   const [mobileOpen, setMobileOpen] = useState(false);
-  const { user, isAuthenticated, isAdmin, logout } = useAuth();
+  const { user, isAuthenticated, isAdmin, isKitchen, isCashier, logout } =
+    useAuth();
   const { itemCount, openCart } = useCart();
   const location = useLocation();
+
+  const workspaceLinks = isAdmin
+    ? [
+        { to: '/kitchen', label: 'المطبخ' },
+        { to: '/cashier', label: 'الكاشير' },
+      ]
+    : [
+        ...(isKitchen ? [{ to: '/kitchen', label: 'المطبخ' }] : []),
+        ...(isCashier ? [{ to: '/cashier', label: 'الكاشير' }] : []),
+      ];
+  const isStaff = isKitchen || isCashier;
+  const homePath = isKitchen ? '/kitchen' : isCashier ? '/cashier' : '/';
 
   useEffect(() => {
     setMobileOpen(false);
@@ -40,7 +67,7 @@ export const Navbar = () => {
 
       <div className="border-b border-sand-200/70 bg-sand-50/90 backdrop-blur-xl">
         <div className="container-page flex h-[72px] items-center justify-between gap-4">
-          <Link to="/" className="group flex items-center gap-3">
+          <Link to={homePath} className="group flex items-center gap-3">
             <span className="relative flex h-12 w-12 items-center justify-center rounded-2xl bg-emerald-deep text-gold shadow-lg shadow-emerald-deep/20">
               <span className="absolute inset-1 rounded-xl border border-gold/40" />
               <span className="font-display text-2xl font-bold">ح</span>
@@ -56,14 +83,25 @@ export const Navbar = () => {
           </Link>
 
           <nav className="hidden items-center gap-1 lg:flex" aria-label="القائمة الرئيسية">
-            {navLinks.map((link) => (
-              <Link
+            {!isStaff
+              ? navLinks.map((link) => (
+                  <Link
+                    key={link.to}
+                    to={link.to}
+                    className="rounded-full px-4 py-2 text-sm font-semibold text-emerald-deep/75 transition hover:bg-emerald-deep/5 hover:text-emerald-deep"
+                  >
+                    {link.label}
+                  </Link>
+                ))
+              : null}
+            {workspaceLinks.map((link) => (
+              <NavLink
                 key={link.to}
                 to={link.to}
-                className="rounded-full px-4 py-2 text-sm font-semibold text-emerald-deep/75 transition hover:bg-emerald-deep/5 hover:text-emerald-deep"
+                className={workspaceLinkClass}
               >
                 {link.label}
-              </Link>
+              </NavLink>
             ))}
             {isAdmin ? (
               <Link
@@ -76,19 +114,21 @@ export const Navbar = () => {
           </nav>
 
           <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={openCart}
-              className="relative rounded-full border border-emerald-deep/10 bg-white p-3 text-emerald-deep transition hover:border-emerald-deep/30 hover:shadow-sm"
-              aria-label="فتح سلة الطلبات"
-            >
-              سلة
-              {itemCount > 0 ? (
-                <span className="absolute -top-1 -right-1 flex h-5 min-w-5 items-center justify-center rounded-full bg-gold px-1 text-[10px] font-bold text-night">
-                  {itemCount}
-                </span>
-              ) : null}
-            </button>
+            {!isStaff ? (
+              <button
+                type="button"
+                onClick={openCart}
+                className="relative rounded-full border border-emerald-deep/10 bg-white p-3 text-emerald-deep transition hover:border-emerald-deep/30 hover:shadow-sm"
+                aria-label="فتح سلة الطلبات"
+              >
+                سلة
+                {itemCount > 0 ? (
+                  <span className="absolute -top-1 -right-1 flex h-5 min-w-5 items-center justify-center rounded-full bg-gold px-1 text-[10px] font-bold text-night">
+                    {itemCount}
+                  </span>
+                ) : null}
+              </button>
+            ) : null}
 
             {isAuthenticated ? (
               <div className="hidden items-center gap-2 sm:flex">
@@ -133,14 +173,25 @@ export const Navbar = () => {
         {mobileOpen ? (
           <div className="border-t border-sand-200 bg-sand-50 px-4 pb-5 pt-3 lg:hidden">
             <nav className="flex flex-col gap-1" aria-label="قائمة الهاتف">
-              {navLinks.map((link) => (
-                <Link
+              {!isStaff
+                ? navLinks.map((link) => (
+                    <Link
+                      key={link.to}
+                      to={link.to}
+                      className="rounded-xl px-4 py-3 text-sm font-bold text-emerald-deep transition hover:bg-emerald-deep/5"
+                    >
+                      {link.label}
+                    </Link>
+                  ))
+                : null}
+              {workspaceLinks.map((link) => (
+                <NavLink
                   key={link.to}
                   to={link.to}
-                  className="rounded-xl px-4 py-3 text-sm font-bold text-emerald-deep transition hover:bg-emerald-deep/5"
+                  className={mobileWorkspaceLinkClass}
                 >
                   {link.label}
-                </Link>
+                </NavLink>
               ))}
               {isAdmin ? (
                 <Link

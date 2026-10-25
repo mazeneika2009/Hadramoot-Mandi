@@ -1,4 +1,6 @@
+import type { PoolConnection, RowDataPacket } from 'mysql2/promise';
 import { pool } from './pool';
+import { queryRows } from './query';
 
 const statements: readonly string[] = [
   `CREATE TABLE IF NOT EXISTS users (
@@ -7,7 +9,8 @@ const statements: readonly string[] = [
     email VARCHAR(255) NOT NULL,
     password_hash VARCHAR(255) NOT NULL,
     phone VARCHAR(20) NULL,
-    role ENUM('customer', 'admin') NOT NULL DEFAULT 'customer',
+    role ENUM('customer', 'admin', 'kitchen', 'cashier') NOT NULL DEFAULT 'customer',
+    is_approved BOOLEAN NOT NULL DEFAULT FALSE,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     PRIMARY KEY (id),
@@ -35,9 +38,10 @@ const statements: readonly string[] = [
     total_amount DECIMAL(10, 2) NOT NULL,
     delivery_address TEXT NOT NULL,
     payment_status ENUM('PENDING', 'PAID', 'FAILED', 'REFUNDED') NOT NULL DEFAULT 'PENDING',
-    order_status ENUM('PENDING', 'PREPARING', 'OUT_FOR_DELIVERY', 'DELIVERED', 'CANCELLED') NOT NULL DEFAULT 'PENDING',
+    order_status ENUM('PENDING', 'PREPARING', 'READY', 'OUT_FOR_DELIVERY', 'DELIVERED', 'CANCELLED') NOT NULL DEFAULT 'PENDING',
     payment_id VARCHAR(100) NULL,
     payment_url VARCHAR(1000) NULL,
+    payment_method ENUM('ONLINE','CASH') NOT NULL DEFAULT 'ONLINE',
     notes TEXT NULL,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -83,12 +87,106 @@ const statements: readonly string[] = [
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
 ];
 
+/**
+ * Columns that were added after the initial release. MySQL does not support
+ * `ADD COLUMN IF NOT EXISTS` (that is MariaDB-only), so each column is checked
+ * against information_schema before the ALTER runs. This keeps startup
+ * idempotent on both MySQL and MariaDB.
+ */
+const columnMigrations: ReadonlyArray<{
+  table: string;
+  column: string;
+  definition: string;
+  after?: string;
+}> = [
+  {
+    table: 'users',
+    column: 'is_approved',
+    definition: 'BOOLEAN NOT NULL DEFAULT FALSE',
+    after: 'role',
+  },
+  {
+    table: 'orders',
+    column: 'payment_method',
+    definition: "ENUM('ONLINE','CASH') NOT NULL DEFAULT 'ONLINE'",
+    after: 'payment_url',
+  },
+];
+
+interface ColumnRow extends RowDataPacket {
+  COLUMN_NAME: string;
+}
+
+const columnExists = async (
+  connection: PoolConnection,
+  table: string,
+  column: string,
+): Promise<boolean> => {
+  const rows = await queryRows<ColumnRow>(
+    connection,
+    `SELECT COLUMN_NAME
+       FROM information_schema.COLUMNS
+      WHERE TABLE_SCHEMA = DATABASE()
+        AND TABLE_NAME = ?
+        AND COLUMN_NAME = ?
+      LIMIT 1`,
+    [table, column],
+  );
+  return rows.length > 0;
+};
+
+const runSchemaStatement = async (
+  connection: PoolConnection,
+  sql: string,
+): Promise<boolean> => {
+  try {
+    await connection.query(sql);
+    return true;
+  } catch (err) {
+    console.warn('Schema init note:', (err as Error).message);
+    return false;
+  }
+};
+
 export const initializeSchema = async (): Promise<void> => {
   const connection = await pool.getConnection();
   try {
     for (const statement of statements) {
-      await connection.query(statement);
+      await runSchemaStatement(connection, statement);
     }
+
+    for (const migration of columnMigrations) {
+      if (await columnExists(connection, migration.table, migration.column)) {
+        continue;
+      }
+      const after = migration.after ? ` AFTER \`${migration.after}\`` : '';
+      const added = await runSchemaStatement(
+        connection,
+        `ALTER TABLE \`${migration.table}\` ADD COLUMN \`${migration.column}\` ${migration.definition}${after}`,
+      );
+      if (added) {
+        console.info(
+          `Schema init: added column ${migration.table}.${migration.column}`,
+        );
+      }
+    }
+
+    // Keep enums in sync for databases created before staff roles and the
+    // READY kitchen status existed.
+    await runSchemaStatement(
+      connection,
+      `ALTER TABLE users MODIFY COLUMN role ENUM('admin','kitchen','cashier','customer') NOT NULL DEFAULT 'customer'`,
+    );
+    await runSchemaStatement(
+      connection,
+      `ALTER TABLE orders MODIFY COLUMN order_status ENUM('PENDING','PREPARING','READY','OUT_FOR_DELIVERY','DELIVERED','CANCELLED') NOT NULL DEFAULT 'PENDING'`,
+    );
+    // Approval only applies to staff; normalise legacy rows so existing
+    // customers and administrators are not locked out.
+    await runSchemaStatement(
+      connection,
+      `UPDATE users SET is_approved = TRUE WHERE role IN ('admin','customer') AND is_approved = FALSE`,
+    );
   } finally {
     connection.release();
   }

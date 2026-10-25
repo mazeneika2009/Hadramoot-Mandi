@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
   formatPrice,
@@ -6,7 +6,9 @@ import {
   paymentStatuses,
 } from '@shared/config';
 import type { AdminStats, OrderDto } from '@shared/api';
+import { getStoredToken } from '../../api/client';
 import { orderApi } from '../../api/orders';
+import { useAuth } from '../../context/AuthContext';
 import { Alert, PageLoader, StatusBadge } from '../../components/ui/Feedback';
 import { formatDateTime, getErrorMessage } from '../../utils/format';
 
@@ -22,8 +24,10 @@ export const AdminDashboardPage = () => {
   const [recentOrders, setRecentOrders] = useState<OrderDto[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const { isAuthenticated, loading: authLoading } = useAuth();
 
-  const loadDashboard = async () => {
+  const loadDashboard = useCallback(async () => {
+    if (authLoading || !isAuthenticated || !getStoredToken()) return;
     setLoading(true);
     setError(null);
     try {
@@ -38,11 +42,12 @@ export const AdminDashboardPage = () => {
     } finally {
       setLoading(false);
     }
-  };
+  }, [authLoading, isAuthenticated]);
 
   useEffect(() => {
+    if (authLoading || !isAuthenticated) return;
     void loadDashboard();
-  }, []);
+  }, [authLoading, isAuthenticated, loadDashboard]);
 
   if (loading) return <PageLoader label="جارٍ تحميل الإحصائيات..." />;
   if (error) {

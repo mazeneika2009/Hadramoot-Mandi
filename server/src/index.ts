@@ -4,10 +4,12 @@ import { env } from './config/env';
 import { ensureDatabase } from './db/bootstrap';
 import { pool, verifyDatabaseConnection } from './db/pool';
 import { initializeSchema } from './db/schema';
+import { ensureDefaultAccounts } from './db/seed';
 
 const start = async (): Promise<void> => {
   await ensureDatabase();
   await initializeSchema();
+  await ensureDefaultAccounts();
   await verifyDatabaseConnection();
 
   const app = createApp();
