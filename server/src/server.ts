@@ -1,16 +1,12 @@
 import { brand } from '../../shared/config';
 import { env } from './config/env';
 import app from './index';
-import { ensureDatabase } from './db/bootstrap';
-import { pool, verifyDatabaseConnection } from './db/pool';
-import { initializeSchema } from './db/schema';
+import { verifyDatabaseConnection } from './db/client';
 import { ensureDefaultAccounts } from './db/seed';
 
 const start = async (): Promise<void> => {
-  await ensureDatabase();
-  await initializeSchema();
-  await ensureDefaultAccounts();
   await verifyDatabaseConnection();
+  await ensureDefaultAccounts();
 
   const server = app.listen(env.port, () => {
     console.log(
@@ -20,9 +16,7 @@ const start = async (): Promise<void> => {
 
   const shutdown = (signal: string): void => {
     console.log(`${signal} received, shutting down gracefully...`);
-    server.close(() => {
-      void pool.end().finally(() => process.exit(0));
-    });
+    server.close(() => process.exit(0));
   };
 
   process.on('SIGTERM', () => shutdown('SIGTERM'));

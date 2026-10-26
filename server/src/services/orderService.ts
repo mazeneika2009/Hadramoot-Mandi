@@ -7,7 +7,6 @@ import type {
   Paginated,
   PaymentStatus,
 } from '../../../shared/api';
-import { pool } from '../db/pool';
 import { menuRepository } from '../repositories/menuRepository';
 import {
   orderRepository,
@@ -55,66 +54,49 @@ export const orderService = {
     }
 
     const menuItemIds = [...quantities.keys()];
-    const connection = await pool.getConnection();
-    let orderId = 0;
 
-    try {
-      await connection.beginTransaction();
+    const menuItems = await menuRepository.findByIds(menuItemIds);
+    const menuById = new Map(menuItems.map((item) => [item.id, item]));
 
-      const menuItems = await menuRepository.findByIds(menuItemIds, connection);
-      const menuById = new Map(menuItems.map((item) => [item.id, item]));
+    const validatedItems: {
+      menuItemId: number;
+      quantity: number;
+      price: number;
+    }[] = [];
+    let totalAmount = 0;
 
-      const validatedItems: {
-        menuItemId: number;
-        quantity: number;
-        price: number;
-      }[] = [];
-      let totalAmount = 0;
-
-      for (const menuItemId of menuItemIds) {
-        const menuItem = menuById.get(menuItemId);
-        if (!menuItem) {
-          throw ApiError.badRequest(`الصنف رقم ${menuItemId} غير موجود`);
-        }
-        if (!menuItem.isAvailable) {
-          throw ApiError.badRequest(`الصنف "${menuItem.name}" غير متوفر حالياً`);
-        }
-
-        const quantity = quantities.get(menuItemId) ?? 0;
-        const lineTotal = roundMoney(menuItem.price * quantity);
-        totalAmount = roundMoney(totalAmount + lineTotal);
-        validatedItems.push({
-          menuItemId,
-          quantity,
-          price: menuItem.price,
-        });
+    for (const menuItemId of menuItemIds) {
+      const menuItem = menuById.get(menuItemId);
+      if (!menuItem) {
+        throw ApiError.badRequest(`الصنف رقم ${menuItemId} غير موجود`);
+      }
+      if (!menuItem.isAvailable) {
+        throw ApiError.badRequest(`الصنف "${menuItem.name}" غير متوفر حالياً`);
       }
 
-      const paymentMethod = input.paymentMethod ?? 'ONLINE';
-      orderId = await orderRepository.insertOrder(connection, {
-        userId,
-        totalAmount,
-        deliveryAddress: input.deliveryAddress,
-        paymentMethod,
-        notes: input.notes?.trim() || null,
+      const quantity = quantities.get(menuItemId) ?? 0;
+      const lineTotal = roundMoney(menuItem.price * quantity);
+      totalAmount = roundMoney(totalAmount + lineTotal);
+      validatedItems.push({
+        menuItemId,
+        quantity,
+        price: menuItem.price,
       });
-
-      for (const item of validatedItems) {
-        await orderRepository.insertOrderItem(connection, {
-          orderId,
-          menuItemId: item.menuItemId,
-          quantity: item.quantity,
-          priceAtPurchase: item.price,
-        });
-      }
-
-      await connection.commit();
-    } catch (error) {
-      await connection.rollback();
-      throw error;
-    } finally {
-      connection.release();
     }
+
+    const paymentMethod = input.paymentMethod ?? 'ONLINE';
+    const orderId = await orderRepository.createWithItems({
+      userId,
+      totalAmount,
+      deliveryAddress: input.deliveryAddress,
+      paymentMethod,
+      notes: input.notes?.trim() || null,
+      items: validatedItems.map((item) => ({
+        menuItemId: item.menuItemId,
+        quantity: item.quantity,
+        priceAtPurchase: item.price,
+      })),
+    });
 
     try {
       await paymentService.createInvoiceForOrder(orderId);

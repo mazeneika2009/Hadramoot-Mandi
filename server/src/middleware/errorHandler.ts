@@ -39,7 +39,8 @@ export const errorHandler = (
 
   const dbError = error as DatabaseError;
 
-  if (dbError.code === 'ER_DUP_ENTRY') {
+  // PostgreSQL SQLSTATE 23505: unique_violation.
+  if (dbError.code === '23505') {
     res.status(409).json({
       success: false,
       message: 'هذا السجل موجود مسبقاً',
@@ -47,13 +48,33 @@ export const errorHandler = (
     return;
   }
 
-  if (
-    dbError.code === 'ER_ROW_IS_REFERENCED_2' ||
-    dbError.code === 'ER_NO_REFERENCED_ROW_2'
-  ) {
+  // PostgreSQL SQLSTATE 23503: foreign_key_violation.
+  if (dbError.code === '23503') {
     res.status(409).json({
       success: false,
       message: 'لا يمكن تنفيذ العملية لوجود بيانات مرتبطة',
+    });
+    return;
+  }
+
+  // PostgreSQL SQLSTATE 23514 / 22P02 / 22023: invalid value, enum or check.
+  if (
+    dbError.code === '23514' ||
+    dbError.code === '22P02' ||
+    dbError.code === '22023'
+  ) {
+    res.status(400).json({
+      success: false,
+      message: 'البيانات المرسلة غير صالحة',
+    });
+    return;
+  }
+
+  // PostgREST cannot return a single row (for example after an update).
+  if (dbError.code === 'PGRST116') {
+    res.status(404).json({
+      success: false,
+      message: 'العنصر غير موجود',
     });
     return;
   }

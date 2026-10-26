@@ -1,18 +1,17 @@
-import type { RowDataPacket } from 'mysql2/promise';
 import type { UserDto } from '../../../shared/api';
-import { pool } from '../db/pool';
-import { executeStatement, queryRows, type DbClient } from '../db/query';
+import { supabase } from '../db/client';
+import { assertNoError, unwrap } from '../db/query';
 import type { Role, UserRecord } from '../types/domain';
 import { toIsoString } from '../utils/sanitize';
 
-interface UserRow extends RowDataPacket {
+interface UserRow {
   id: number;
   name: string;
   email: string;
   password_hash: string;
   phone: string | null;
   role: Role;
-  created_at: Date | string;
+  created_at: string;
   is_approved: boolean;
 }
 
@@ -41,85 +40,91 @@ const selectColumns =
   'id, name, email, password_hash, phone, role, created_at, is_approved';
 
 export const userRepository = {
-  async findByEmail(email: string, client: DbClient = pool): Promise<UserRecord | null> {
-    const rows = await queryRows<UserRow>(
-      client,
-      `SELECT ${selectColumns} FROM users WHERE email = ? LIMIT 1`,
-      [email.toLowerCase()],
-    );
-    return rows[0] ? mapUser(rows[0]) : null;
+  async findByEmail(email: string): Promise<UserRecord | null> {
+    const result = await supabase
+      .from('users')
+      .select(selectColumns)
+      .eq('email', email.toLowerCase())
+      .maybeSingle();
+
+    const row = unwrap(result, 'find user by email') as UserRow | null;
+    return row ? mapUser(row) : null;
   },
 
-  async findById(id: number, client: DbClient = pool): Promise<UserRecord | null> {
-    const rows = await queryRows<UserRow>(
-      client,
-      `SELECT ${selectColumns} FROM users WHERE id = ? LIMIT 1`,
-      [id],
-    );
-    return rows[0] ? mapUser(rows[0]) : null;
+  async findById(id: number): Promise<UserRecord | null> {
+    const result = await supabase
+      .from('users')
+      .select(selectColumns)
+      .eq('id', id)
+      .maybeSingle();
+
+    const row = unwrap(result, 'find user by id') as UserRow | null;
+    return row ? mapUser(row) : null;
   },
 
-  async listApprovedByRole(
-    role: Role,
-    client: DbClient = pool,
-  ): Promise<UserRecord[]> {
-    const rows = await queryRows<UserRow>(
-      client,
-      `SELECT ${selectColumns}
-         FROM users
-        WHERE role = ? AND is_approved = TRUE
-        ORDER BY name ASC, id ASC`,
-      [role],
-    );
-    return rows.map(mapUser);
+  async listApprovedByRole(role: Role): Promise<UserRecord[]> {
+    const result = await supabase
+      .from('users')
+      .select(selectColumns)
+      .eq('role', role)
+      .eq('is_approved', true)
+      .order('name', { ascending: true })
+      .order('id', { ascending: true });
+
+    const rows = unwrap(result, 'list approved users') as UserRow[] | null;
+    return (rows ?? []).map(mapUser);
   },
 
-  async isApproved(id: number, client: DbClient = pool): Promise<boolean> {
-    const rows = await queryRows<UserRow>(
-      client,
-      `SELECT ${selectColumns} FROM users WHERE id = ? LIMIT 1`,
-      [id],
-    );
-    return rows[0]?.is_approved ?? false;
+  async isApproved(id: number): Promise<boolean> {
+    const result = await supabase
+      .from('users')
+      .select('is_approved')
+      .eq('id', id)
+      .maybeSingle();
+
+    const row = unwrap(result, 'check user approval') as {
+      is_approved: boolean;
+    } | null;
+    return Boolean(row?.is_approved ?? false);
   },
 
-  async updateApproval(id: number, approved: boolean, client: DbClient = pool): Promise<void> {
-    await executeStatement(
-      client,
-      `UPDATE users SET is_approved = ? WHERE id = ?`,
-      [approved ? 1 : 0, id],
-    );
+  async updateApproval(id: number, approved: boolean): Promise<void> {
+    const { error } = await supabase
+      .from('users')
+      .update({ is_approved: approved })
+      .eq('id', id);
+
+    assertNoError(error, 'update user approval');
   },
 
-  async create(
-    data: {
-      name: string;
-      email: string;
-      passwordHash: string;
-      phone: string | null;
-      role: Role;
-      isApproved?: boolean;
-    },
-    client: DbClient = pool,
-  ): Promise<number> {
+  async create(data: {
+    name: string;
+    email: string;
+    passwordHash: string;
+    phone: string | null;
+    role: Role;
+    isApproved?: boolean;
+  }): Promise<number> {
     // Customers and administrators are usable immediately; staff accounts are
     // created pending administrator approval unless explicitly approved.
     const isApproved =
       data.isApproved ??
       (data.role === 'customer' || data.role === 'admin');
-    const result = await executeStatement(
-      client,
-      `INSERT INTO users (name, email, password_hash, phone, role, is_approved)
-       VALUES (?, ?, ?, ?, ?, ?)`,
-      [
-        data.name,
-        data.email.toLowerCase(),
-        data.passwordHash,
-        data.phone,
-        data.role,
-        isApproved ? 1 : 0,
-      ],
-    );
-    return Number(result.insertId);
+
+    const result = await supabase
+      .from('users')
+      .insert({
+        name: data.name,
+        email: data.email.toLowerCase(),
+        password_hash: data.passwordHash,
+        phone: data.phone,
+        role: data.role,
+        is_approved: isApproved,
+      })
+      .select('id')
+      .single();
+
+    const row = unwrap(result, 'create user') as { id: number };
+    return Number(row.id);
   },
 };

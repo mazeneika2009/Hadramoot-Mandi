@@ -156,19 +156,33 @@ var frontendOrigins = readOrigins("FRONTEND_URL", [
 ]);
 var fawaterakApiKey = process.env.FAWATERAK_API_KEY?.trim() ?? "";
 var fawaterakWebhookSecret = process.env.FAWATERAK_WEBHOOK_SECRET?.trim() ?? "";
+var supabaseServiceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY?.trim() || process.env.SUPABASE_SECRET_KEY?.trim();
+if (!supabaseServiceRoleKey) {
+  throw new Error(
+    "Missing required environment variable: SUPABASE_SERVICE_ROLE_KEY"
+  );
+}
 var env = {
   nodeEnv,
   isProduction,
   port: readNumber("PORT", 3e3),
   frontendOrigins,
   primaryFrontendUrl: frontendOrigins[0] ?? "http://localhost:5173",
-  database: {
-    host: readString("DB_HOST", "localhost"),
-    port: readNumber("DB_PORT", 3306),
-    user: readString("DB_USER", "root"),
-    password: process.env.DB_PASSWORD ?? "",
-    name: readString("DB_NAME", "hadramout_mandi"),
-    connectionLimit: readNumber("DB_CONNECTION_LIMIT", 10)
+  supabase: {
+    url: readString("SUPABASE_URL"),
+    // The anon key is only needed if a browser client is added later. The API
+    // itself always talks to Supabase with the service-role key.
+    anonKey: process.env.SUPABASE_ANON_KEY?.trim() || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY?.trim() || process.env.SUPABASE_PUBLISHABLE_KEY?.trim() || "",
+    serviceRoleKey: supabaseServiceRoleKey
+  },
+  // Used only by the `db:init` migration runner, never by the API at runtime.
+  postgres: {
+    url: process.env.POSTGRES_URL_NON_POOLING?.trim() || process.env.POSTGRES_URL?.trim() || process.env.DATABASE_URL?.trim() || process.env.SUPABASE_DB_URL?.trim() || "",
+    host: process.env.POSTGRES_HOST?.trim() ?? "",
+    port: readNumber("POSTGRES_PORT", 5432),
+    user: process.env.POSTGRES_USER?.trim() ?? "",
+    password: process.env.POSTGRES_PASSWORD ?? "",
+    database: process.env.POSTGRES_DATABASE?.trim() ?? "postgres"
   },
   jwt: {
     secret: jwtSecret,
@@ -278,17 +292,31 @@ var errorHandler = (error, _req, res, _next) => {
     return;
   }
   const dbError = error;
-  if (dbError.code === "ER_DUP_ENTRY") {
+  if (dbError.code === "23505") {
     res.status(409).json({
       success: false,
       message: "\u0647\u0630\u0627 \u0627\u0644\u0633\u062C\u0644 \u0645\u0648\u062C\u0648\u062F \u0645\u0633\u0628\u0642\u0627\u064B"
     });
     return;
   }
-  if (dbError.code === "ER_ROW_IS_REFERENCED_2" || dbError.code === "ER_NO_REFERENCED_ROW_2") {
+  if (dbError.code === "23503") {
     res.status(409).json({
       success: false,
       message: "\u0644\u0627 \u064A\u0645\u0643\u0646 \u062A\u0646\u0641\u064A\u0630 \u0627\u0644\u0639\u0645\u0644\u064A\u0629 \u0644\u0648\u062C\u0648\u062F \u0628\u064A\u0627\u0646\u0627\u062A \u0645\u0631\u062A\u0628\u0637\u0629"
+    });
+    return;
+  }
+  if (dbError.code === "23514" || dbError.code === "22P02" || dbError.code === "22023") {
+    res.status(400).json({
+      success: false,
+      message: "\u0627\u0644\u0628\u064A\u0627\u0646\u0627\u062A \u0627\u0644\u0645\u0631\u0633\u0644\u0629 \u063A\u064A\u0631 \u0635\u0627\u0644\u062D\u0629"
+    });
+    return;
+  }
+  if (dbError.code === "PGRST116") {
+    res.status(404).json({
+      success: false,
+      message: "\u0627\u0644\u0639\u0646\u0635\u0631 \u063A\u064A\u0631 \u0645\u0648\u062C\u0648\u062F"
     });
     return;
   }
@@ -358,40 +386,67 @@ var reservationLimiter = buildLimiter(
 // src/routes/adminRoutes.ts
 var import_express = require("express");
 
-// src/db/pool.ts
-var import_promise = __toESM(require("mysql2/promise"));
-var pool = import_promise.default.createPool({
-  host: env.database.host,
-  port: env.database.port,
-  user: env.database.user,
-  password: env.database.password,
-  database: env.database.name,
-  waitForConnections: true,
-  connectionLimit: env.database.connectionLimit,
-  queueLimit: 0,
-  charset: "utf8mb4",
-  decimalNumbers: true,
-  dateStrings: false,
-  timezone: "Z",
-  enableKeepAlive: true
+// src/db/client.ts
+var import_supabase_js = require("@supabase/supabase-js");
+var supabase = (0, import_supabase_js.createClient)(
+  env.supabase.url,
+  env.supabase.serviceRoleKey,
+  {
+    auth: {
+      autoRefreshToken: false,
+      detectSessionInUrl: false,
+      persistSession: false
+    },
+    db: {
+      schema: "public"
+    }
+  }
+);
+var delay = (milliseconds) => new Promise((resolve) => {
+  setTimeout(resolve, milliseconds);
 });
 var verifyDatabaseConnection = async () => {
-  const connection = await pool.getConnection();
-  try {
-    await connection.ping();
-  } finally {
-    connection.release();
+  const attempts = 5;
+  let lastMessage = "unknown error";
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    const { error } = await supabase.from("users").select("id", { count: "exact", head: true }).limit(1);
+    if (!error) return;
+    lastMessage = error.message;
+    if (attempt < attempts) {
+      await delay(500);
+    }
   }
+  throw new Error(
+    `Unable to reach Supabase (${env.supabase.url}): ${lastMessage}. Has "npm run db:init" been run?`
+  );
 };
 
 // src/db/query.ts
-var queryRows = async (client, sql, values = []) => {
-  const [rows] = await client.execute(sql, [...values]);
-  return rows;
+var DatabaseError = class extends Error {
+  code;
+  details;
+  hint;
+  constructor(context, error) {
+    super(`${context}: ${error.message}`);
+    this.name = "DatabaseError";
+    this.code = error.code;
+    this.details = error.details;
+    this.hint = error.hint;
+  }
 };
-var executeStatement = async (client, sql, values = []) => {
-  const [result] = await client.execute(sql, [...values]);
-  return result;
+var assertNoError = (error, context) => {
+  if (!error) return;
+  console.error(`[supabase] ${context}:`, {
+    code: error.code,
+    message: error.message,
+    details: error.details,
+    hint: error.hint
+  });
+  throw new DatabaseError(context, error);
+};
+var unwrap = (result, context) => {
+  assertNoError(result.error, context);
+  return result.data;
 };
 
 // src/utils/request.ts
@@ -416,6 +471,10 @@ var paginationFromQuery = (query2, defaultLimit, maxLimit) => {
   return { page, limit, offset: (page - 1) * limit };
 };
 var escapeLike = (value) => value.replace(/[\\%_]/g, (character) => `\\${character}`);
+var toPostgrestIlikePattern = (value) => {
+  const cleaned = value.replace(/[,()"\\]/g, " ").trim();
+  return `%${escapeLike(cleaned)}%`;
+};
 
 // src/utils/sanitize.ts
 var controlCharacters = /[\u0000-\u001F\u007F]/g;
@@ -446,6 +505,17 @@ var toNullableIsoString = (value) => {
 };
 
 // src/repositories/menuRepository.ts
+var categoryOrder = [
+  "mandi",
+  "madhbi",
+  "mathloutha",
+  "appetizers",
+  "drinks",
+  "desserts"
+];
+var categoryRank = new Map(
+  categoryOrder.map((category, index) => [category, index])
+);
 var mapMenuItem = (row) => ({
   id: Number(row.id),
   name: row.name,
@@ -475,143 +545,129 @@ var toMenuItemDto = (item) => ({
 var selectColumns = `id, name, name_en, description, description_en, price,
   category, image_url, is_available, created_at, updated_at`;
 var menuRepository = {
-  async list(filters, client = pool) {
-    const conditions = [];
-    const params = [];
+  async list(filters) {
+    let query2 = supabase.from("menu_items").select(selectColumns);
     if (filters.category) {
-      conditions.push("category = ?");
-      params.push(filters.category);
+      query2 = query2.eq("category", filters.category);
     }
     if (filters.search) {
-      const pattern = `%${escapeLike(filters.search)}%`;
-      conditions.push(
-        "(name LIKE ? ESCAPE '\\\\' OR name_en LIKE ? ESCAPE '\\\\' OR description LIKE ? ESCAPE '\\\\')"
+      const pattern = toPostgrestIlikePattern(filters.search);
+      query2 = query2.or(
+        [
+          `name.ilike.${pattern}`,
+          `name_en.ilike.${pattern}`,
+          `description.ilike.${pattern}`
+        ].join(",")
       );
-      params.push(pattern, pattern, pattern);
     }
     if (typeof filters.available === "boolean") {
-      conditions.push("is_available = ?");
-      params.push(filters.available ? 1 : 0);
+      query2 = query2.eq("is_available", filters.available);
     }
-    const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
-    const rows = await queryRows(
-      client,
-      `SELECT ${selectColumns} FROM menu_items ${where}
-       ORDER BY FIELD(category, 'mandi', 'madhbi', 'mathloutha', 'appetizers', 'drinks', 'desserts'), id`,
-      params
-    );
-    return rows.map(mapMenuItem);
+    const result = await query2.order("category", { ascending: true }).order("id", { ascending: true });
+    const rows = unwrap(result, "list menu items");
+    return (rows ?? []).map(mapMenuItem).sort((left, right) => {
+      const leftRank = categoryRank.get(left.category) ?? categoryOrder.length;
+      const rightRank = categoryRank.get(right.category) ?? categoryOrder.length;
+      return leftRank - rightRank || left.id - right.id;
+    });
   },
-  async findById(id, client = pool) {
-    const rows = await queryRows(
-      client,
-      `SELECT ${selectColumns} FROM menu_items WHERE id = ? LIMIT 1`,
-      [id]
-    );
-    return rows[0] ? mapMenuItem(rows[0]) : null;
+  async findById(id) {
+    const result = await supabase.from("menu_items").select(selectColumns).eq("id", id).maybeSingle();
+    const row = unwrap(result, "find menu item");
+    return row ? mapMenuItem(row) : null;
   },
-  async findByIds(ids, client = pool) {
+  async findByIds(ids) {
     if (ids.length === 0) return [];
-    const placeholders = ids.map(() => "?").join(", ");
-    const rows = await queryRows(
-      client,
-      `SELECT ${selectColumns} FROM menu_items WHERE id IN (${placeholders})`,
-      ids
-    );
-    return rows.map(mapMenuItem);
+    const result = await supabase.from("menu_items").select(selectColumns).in("id", [...ids]);
+    const rows = unwrap(result, "find menu items by ids");
+    return (rows ?? []).map(mapMenuItem);
   },
-  async create(data, client = pool) {
-    const result = await executeStatement(
-      client,
-      `INSERT INTO menu_items
-         (name, name_en, description, description_en, price, category, image_url, is_available)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        data.name,
-        data.nameEn ?? null,
-        data.description ?? null,
-        data.descriptionEn ?? null,
-        data.price,
-        data.category,
-        data.imageUrl ?? null,
-        data.isAvailable ?? true
-      ]
-    );
-    return Number(result.insertId);
+  async create(data) {
+    const result = await supabase.from("menu_items").insert({
+      name: data.name,
+      name_en: data.nameEn ?? null,
+      description: data.description ?? null,
+      description_en: data.descriptionEn ?? null,
+      price: data.price,
+      category: data.category,
+      image_url: data.imageUrl ?? null,
+      is_available: data.isAvailable ?? true
+    }).select("id").single();
+    const row = unwrap(result, "create menu item");
+    return Number(row.id);
   },
-  async update(id, data, client = pool) {
-    const result = await executeStatement(
-      client,
-      `UPDATE menu_items
-       SET name = ?, name_en = ?, description = ?, description_en = ?,
-           price = ?, category = ?, image_url = ?, is_available = ?
-       WHERE id = ?`,
-      [
-        data.name,
-        data.nameEn ?? null,
-        data.description ?? null,
-        data.descriptionEn ?? null,
-        data.price,
-        data.category,
-        data.imageUrl ?? null,
-        data.isAvailable ?? true,
-        id
-      ]
-    );
-    return result.affectedRows > 0;
+  async update(id, data) {
+    const result = await supabase.from("menu_items").update({
+      name: data.name,
+      name_en: data.nameEn ?? null,
+      description: data.description ?? null,
+      description_en: data.descriptionEn ?? null,
+      price: data.price,
+      category: data.category,
+      image_url: data.imageUrl ?? null,
+      is_available: data.isAvailable ?? true
+    }).eq("id", id).select("id");
+    const rows = unwrap(result, "update menu item");
+    return (rows?.length ?? 0) > 0;
   },
-  async delete(id, client = pool) {
-    const result = await executeStatement(
-      client,
-      "DELETE FROM menu_items WHERE id = ?",
-      [id]
-    );
-    return result.affectedRows > 0;
+  async delete(id) {
+    const result = await supabase.from("menu_items").delete().eq("id", id).select("id");
+    const rows = unwrap(result, "delete menu item");
+    return (rows?.length ?? 0) > 0;
   },
-  async count(client = pool) {
-    const rows = await queryRows(
-      client,
-      "SELECT COUNT(*) AS total FROM menu_items"
-    );
-    return Number(rows[0]?.total ?? 0);
+  async count() {
+    const { count, error } = await supabase.from("menu_items").select("id", { count: "exact", head: true });
+    assertNoError(error, "count menu items");
+    return count ?? 0;
   }
 };
 
 // src/repositories/orderRepository.ts
-var mapOrder = (row) => ({
-  id: Number(row.id),
-  userId: Number(row.user_id),
-  customerName: row.customer_name,
-  customerEmail: row.customer_email,
-  customerPhone: row.customer_phone,
-  totalAmount: toNumber(row.total_amount),
-  deliveryAddress: row.delivery_address,
-  paymentStatus: row.payment_status,
-  orderStatus: row.order_status,
-  paymentId: row.payment_id,
-  paymentUrl: row.payment_url,
-  notes: row.notes,
-  paymentMethod: row.payment_method,
-  deliveryUserId: row.delivery_user_id === null ? null : Number(row.delivery_user_id),
-  deliveryUserName: row.delivery_user_name ?? null,
-  deliveryUserPhone: row.delivery_user_phone ?? null,
-  dispatchedAt: toNullableIsoString(row.dispatched_at),
-  deliveredAt: toNullableIsoString(row.delivered_at),
-  cashReceived: row.cash_received === null ? null : toNumber(row.cash_received),
-  cashChange: row.cash_change === null ? null : toNumber(row.cash_change),
-  createdAt: toIsoString(row.created_at),
-  updatedAt: toIsoString(row.updated_at)
-});
-var mapOrderItem = (row) => ({
-  id: Number(row.id),
-  orderId: Number(row.order_id),
-  menuItemId: Number(row.menu_item_id),
-  name: row.name,
-  nameEn: row.name_en,
-  imageUrl: row.image_url,
-  quantity: Number(row.quantity),
-  priceAtPurchase: toNumber(row.price_at_purchase)
-});
+var relation = (value) => {
+  if (Array.isArray(value)) return value[0] ?? null;
+  return value ?? null;
+};
+var mapOrder = (row) => {
+  const customer = relation(row.customer);
+  const delivery = relation(row.delivery);
+  return {
+    id: Number(row.id),
+    userId: Number(row.user_id),
+    customerName: customer?.name,
+    customerEmail: customer?.email,
+    customerPhone: customer?.phone ?? null,
+    totalAmount: toNumber(row.total_amount),
+    deliveryAddress: row.delivery_address,
+    paymentStatus: row.payment_status,
+    orderStatus: row.order_status,
+    paymentId: row.payment_id,
+    paymentUrl: row.payment_url,
+    notes: row.notes,
+    paymentMethod: row.payment_method,
+    deliveryUserId: row.delivery_user_id === null ? null : Number(row.delivery_user_id),
+    deliveryUserName: delivery?.name ?? null,
+    deliveryUserPhone: delivery?.phone ?? null,
+    dispatchedAt: toNullableIsoString(row.dispatched_at),
+    deliveredAt: toNullableIsoString(row.delivered_at),
+    cashReceived: row.cash_received === null ? null : toNumber(row.cash_received),
+    cashChange: row.cash_change === null ? null : toNumber(row.cash_change),
+    createdAt: toIsoString(row.created_at),
+    updatedAt: toIsoString(row.updated_at)
+  };
+};
+var mapOrderItem = (row) => {
+  const menuItem = relation(row.menu_item);
+  return {
+    id: Number(row.id),
+    orderId: Number(row.order_id),
+    menuItemId: Number(row.menu_item_id),
+    name: menuItem?.name ?? "",
+    nameEn: menuItem?.name_en ?? null,
+    imageUrl: menuItem?.image_url ?? null,
+    quantity: Number(row.quantity),
+    priceAtPurchase: toNumber(row.price_at_purchase)
+  };
+};
 var toOrderItemDto = (item) => ({
   id: item.id,
   menuItemId: item.menuItemId,
@@ -647,212 +703,134 @@ var toOrderDto = (order, items) => ({
   cashReceived: order.cashReceived,
   cashChange: order.cashChange
 });
-var orderSelect = `o.id, o.user_id, o.total_amount, o.delivery_address,
-  o.payment_status, o.order_status, o.payment_id, o.payment_url, o.notes,
-  o.payment_method, o.delivery_user_id, o.dispatched_at, o.delivered_at,
-  o.cash_received, o.cash_change, o.created_at, o.updated_at`;
-var customerSelect = `u.name AS customer_name, u.email AS customer_email,
-  u.phone AS customer_phone`;
-var deliverySelect = `d.name AS delivery_user_name,
-  d.phone AS delivery_user_phone`;
-var orderJoins = `JOIN users u ON u.id = o.user_id
-  LEFT JOIN users d ON d.id = o.delivery_user_id`;
-var itemSelect = `oi.id, oi.order_id, oi.menu_item_id, oi.quantity,
-  oi.price_at_purchase, mi.name, mi.name_en, mi.image_url`;
+var orderSelect = `id, user_id, total_amount, delivery_address,
+  payment_status, order_status, payment_id, payment_url, notes,
+  payment_method, delivery_user_id, dispatched_at, delivered_at,
+  cash_received, cash_change, created_at, updated_at,
+  customer:users!orders_user_id_fkey(name, email, phone),
+  delivery:users!orders_delivery_user_id_fkey(name, phone)`;
+var itemSelect = `id, order_id, menu_item_id, quantity, price_at_purchase,
+  menu_item:menu_items!order_items_menu_item_id_fkey(name, name_en, image_url)`;
 var orderRepository = {
-  async findById(id, client = pool) {
-    const rows = await queryRows(
-      client,
-      `SELECT ${orderSelect}, ${customerSelect}, ${deliverySelect}
-       FROM orders o ${orderJoins}
-       WHERE o.id = ? LIMIT 1`,
-      [id]
-    );
-    return rows[0] ? mapOrder(rows[0]) : null;
+  async findById(id) {
+    const result = await supabase.from("orders").select(orderSelect).eq("id", id).maybeSingle();
+    const row = unwrap(result, "find order");
+    return row ? mapOrder(row) : null;
   },
-  async findByPaymentId(paymentId, client = pool) {
-    const rows = await queryRows(
-      client,
-      `SELECT ${orderSelect}, ${customerSelect}, ${deliverySelect}
-       FROM orders o ${orderJoins}
-       WHERE o.payment_id = ? LIMIT 1`,
-      [paymentId]
-    );
-    return rows[0] ? mapOrder(rows[0]) : null;
+  async findByPaymentId(paymentId) {
+    const result = await supabase.from("orders").select(orderSelect).eq("payment_id", paymentId).maybeSingle();
+    const row = unwrap(result, "find order by payment id");
+    return row ? mapOrder(row) : null;
   },
-  async list(filters, page, client = pool) {
-    const conditions = [];
-    const params = [];
+  async list(filters, page) {
+    let query2 = supabase.from("orders").select(orderSelect, { count: "exact" });
     if (filters.userId !== void 0) {
-      conditions.push("o.user_id = ?");
-      params.push(filters.userId);
+      query2 = query2.eq("user_id", filters.userId);
     }
     if (filters.deliveryUserId !== void 0) {
-      conditions.push("o.delivery_user_id = ?");
-      params.push(filters.deliveryUserId);
+      query2 = query2.eq("delivery_user_id", filters.deliveryUserId);
     }
     if (filters.status) {
-      if (Array.isArray(filters.status)) {
-        const placeholders = filters.status.map(() => "?").join(", ");
-        conditions.push(`o.order_status IN (${placeholders})`);
-        params.push(...filters.status);
-      } else {
-        conditions.push("o.order_status = ?");
-        params.push(filters.status);
-      }
+      query2 = Array.isArray(filters.status) ? query2.in("order_status", filters.status) : query2.eq("order_status", filters.status);
     }
     if (filters.paymentStatus) {
-      conditions.push("o.payment_status = ?");
-      params.push(filters.paymentStatus);
+      query2 = query2.eq("payment_status", filters.paymentStatus);
     }
-    const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
-    const countRows = await queryRows(
-      client,
-      `SELECT COUNT(*) AS total FROM orders o ${where}`,
-      params
-    );
-    const rows = await queryRows(
-      client,
-      `SELECT ${orderSelect}, ${customerSelect}, ${deliverySelect}
-       FROM orders o ${orderJoins}
-       ${where}
-       ORDER BY o.created_at DESC
-       LIMIT ? OFFSET ?`,
-      [...params, page.limit, page.offset]
-    );
+    const result = await query2.order("created_at", { ascending: false }).range(page.offset, page.offset + page.limit - 1);
+    const rows = unwrap(result, "list orders");
     return {
-      orders: rows.map(mapOrder),
-      total: Number(countRows[0]?.total ?? 0)
+      orders: (rows ?? []).map(mapOrder),
+      total: result.count ?? 0
     };
   },
-  async findItemsByOrderIds(orderIds, client = pool) {
+  async findItemsByOrderIds(orderIds) {
     if (orderIds.length === 0) return [];
-    const placeholders = orderIds.map(() => "?").join(", ");
-    const rows = await queryRows(
-      client,
-      `SELECT ${itemSelect}
-       FROM order_items oi JOIN menu_items mi ON mi.id = oi.menu_item_id
-       WHERE oi.order_id IN (${placeholders})
-       ORDER BY oi.id`,
-      orderIds
-    );
-    return rows.map(mapOrderItem);
+    const result = await supabase.from("order_items").select(itemSelect).in("order_id", [...orderIds]).order("id", { ascending: true });
+    const rows = unwrap(result, "find order items");
+    return (rows ?? []).map(mapOrderItem);
   },
-  async findItemsByOrderId(orderId, client = pool) {
-    return this.findItemsByOrderIds([orderId], client);
+  async findItemsByOrderId(orderId) {
+    return orderRepository.findItemsByOrderIds([orderId]);
   },
-  async insertOrder(client, data) {
-    const result = await executeStatement(
-      client,
-      `INSERT INTO orders
-         (user_id, total_amount, delivery_address, payment_status, order_status, payment_method, notes)
-       VALUES (?, ?, ?, 'PENDING', 'PENDING', ?, ?)`,
-      [
-        data.userId,
-        data.totalAmount,
-        data.deliveryAddress,
-        data.paymentMethod,
-        data.notes
-      ]
-    );
-    return Number(result.insertId);
+  /**
+   * Creates the order and its items in a single PostgreSQL transaction via the
+   * `create_order_with_items` RPC defined in the Supabase migration.
+   */
+  async createWithItems(data) {
+    const result = await supabase.rpc("create_order_with_items", {
+      p_user_id: data.userId,
+      p_total_amount: data.totalAmount,
+      p_delivery_address: data.deliveryAddress,
+      p_payment_method: data.paymentMethod,
+      p_notes: data.notes,
+      p_items: data.items.map((item) => ({
+        menu_item_id: item.menuItemId,
+        quantity: item.quantity,
+        price_at_purchase: item.priceAtPurchase
+      }))
+    });
+    assertNoError(result.error, "create order");
+    return Number(result.data);
   },
-  async insertOrderItem(client, data) {
-    await executeStatement(
-      client,
-      `INSERT INTO order_items
-         (order_id, menu_item_id, quantity, price_at_purchase)
-       VALUES (?, ?, ?, ?)`,
-      [
-        data.orderId,
-        data.menuItemId,
-        data.quantity,
-        data.priceAtPurchase
-      ]
-    );
+  async updatePaymentInfo(orderId, paymentId, paymentUrl) {
+    const { error } = await supabase.from("orders").update({ payment_id: paymentId, payment_url: paymentUrl }).eq("id", orderId);
+    assertNoError(error, "update order payment info");
   },
-  async updatePaymentInfo(orderId, paymentId, paymentUrl, client = pool) {
-    await executeStatement(
-      client,
-      `UPDATE orders SET payment_id = ?, payment_url = ? WHERE id = ?`,
-      [paymentId, paymentUrl, orderId]
-    );
+  async updateStatuses(orderId, paymentStatus, orderStatus) {
+    const { error } = await supabase.from("orders").update({
+      payment_status: paymentStatus,
+      order_status: orderStatus
+    }).eq("id", orderId);
+    assertNoError(error, "update order statuses");
   },
-  async updateStatuses(orderId, paymentStatus, orderStatus, client = pool) {
-    await executeStatement(
-      client,
-      `UPDATE orders SET payment_status = ?, order_status = ? WHERE id = ?`,
-      [paymentStatus, orderStatus, orderId]
-    );
-  },
-  async updateOrderStatus(orderId, orderStatus, client = pool) {
-    await executeStatement(
-      client,
-      "UPDATE orders SET order_status = ? WHERE id = ?",
-      [orderStatus, orderId]
-    );
+  async updateOrderStatus(orderId, orderStatus) {
+    const { error } = await supabase.from("orders").update({ order_status: orderStatus }).eq("id", orderId);
+    assertNoError(error, "update order status");
   },
   /**
    * Assigns a ready order to a driver and dispatches it in one atomic step.
    * The status predicate prevents two cashiers from dispatching the same
    * order concurrently.
    */
-  async dispatchToDriver(orderId, deliveryUserId, client = pool) {
-    const result = await executeStatement(
-      client,
-      `UPDATE orders
-          SET delivery_user_id = ?,
-              order_status = 'OUT_FOR_DELIVERY',
-              dispatched_at = NOW(),
-              delivered_at = NULL,
-              cash_received = NULL,
-              cash_change = NULL
-        WHERE id = ? AND order_status = 'READY'`,
-      [deliveryUserId, orderId]
-    );
-    return result.affectedRows > 0;
+  async dispatchToDriver(orderId, deliveryUserId) {
+    const result = await supabase.from("orders").update({
+      delivery_user_id: deliveryUserId,
+      order_status: "OUT_FOR_DELIVERY",
+      dispatched_at: (/* @__PURE__ */ new Date()).toISOString(),
+      delivered_at: null,
+      cash_received: null,
+      cash_change: null
+    }).eq("id", orderId).eq("order_status", "READY").select("id");
+    const rows = unwrap(result, "dispatch order");
+    return (rows?.length ?? 0) > 0;
   },
   /**
    * Completes a dispatched order, records the cash handover and marks the
    * payment as paid. The status predicate makes confirmation idempotent-safe:
    * a second request cannot overwrite the recorded delivery.
    */
-  async completeDelivery(orderId, cashReceived, cashChange, client = pool) {
-    const result = await executeStatement(
-      client,
-      `UPDATE orders
-          SET order_status = 'DELIVERED',
-              payment_status = 'PAID',
-              delivered_at = NOW(),
-              cash_received = ?,
-              cash_change = ?
-        WHERE id = ? AND order_status = 'OUT_FOR_DELIVERY'`,
-      [cashReceived, cashChange, orderId]
-    );
-    return result.affectedRows > 0;
+  async completeDelivery(orderId, cashReceived, cashChange) {
+    const result = await supabase.from("orders").update({
+      order_status: "DELIVERED",
+      payment_status: "PAID",
+      delivered_at: (/* @__PURE__ */ new Date()).toISOString(),
+      cash_received: cashReceived,
+      cash_change: cashChange
+    }).eq("id", orderId).eq("order_status", "OUT_FOR_DELIVERY").select("id");
+    const rows = unwrap(result, "complete delivery");
+    return (rows?.length ?? 0) > 0;
   },
-  async getStats(client = pool) {
-    const rows = await queryRows(
-      client,
-      `SELECT
-         COUNT(*) AS total_orders,
-         SUM(order_status = 'PENDING') AS pending_orders,
-         SUM(order_status = 'PREPARING') AS preparing_orders,
-         SUM(order_status = 'OUT_FOR_DELIVERY') AS out_for_delivery_orders,
-         SUM(order_status = 'DELIVERED') AS delivered_orders,
-         SUM(order_status = 'CANCELLED') AS cancelled_orders,
-         COALESCE(SUM(CASE WHEN payment_status = 'PAID' THEN total_amount ELSE 0 END), 0) AS total_revenue
-       FROM orders`
-    );
-    const menuRows = await queryRows(
-      client,
-      "SELECT COUNT(*) AS total FROM menu_items"
-    );
-    const reservationRows = await queryRows(
-      client,
-      "SELECT COUNT(*) AS total FROM reservations"
-    );
-    const row = rows[0];
+  async getStats() {
+    const [statsResult, menuResult, reservationResult] = await Promise.all([
+      supabase.rpc("get_order_stats"),
+      supabase.from("menu_items").select("id", { count: "exact", head: true }),
+      supabase.from("reservations").select("id", { count: "exact", head: true })
+    ]);
+    assertNoError(statsResult.error, "load order statistics");
+    assertNoError(menuResult.error, "count menu items");
+    assertNoError(reservationResult.error, "count reservations");
+    const rows = statsResult.data;
+    const row = rows?.[0];
     return {
       totalOrders: Number(row?.total_orders ?? 0),
       pendingOrders: Number(row?.pending_orders ?? 0),
@@ -861,8 +839,8 @@ var orderRepository = {
       deliveredOrders: Number(row?.delivered_orders ?? 0),
       cancelledOrders: Number(row?.cancelled_orders ?? 0),
       totalRevenue: toNumber(row?.total_revenue),
-      totalMenuItems: Number(menuRows[0]?.total ?? 0),
-      totalReservations: Number(reservationRows[0]?.total ?? 0)
+      totalMenuItems: menuResult.count ?? 0,
+      totalReservations: reservationResult.count ?? 0
     };
   }
 };
@@ -889,64 +867,42 @@ var toUserDto = (user) => ({
 });
 var selectColumns2 = "id, name, email, password_hash, phone, role, created_at, is_approved";
 var userRepository = {
-  async findByEmail(email, client = pool) {
-    const rows = await queryRows(
-      client,
-      `SELECT ${selectColumns2} FROM users WHERE email = ? LIMIT 1`,
-      [email.toLowerCase()]
-    );
-    return rows[0] ? mapUser(rows[0]) : null;
+  async findByEmail(email) {
+    const result = await supabase.from("users").select(selectColumns2).eq("email", email.toLowerCase()).maybeSingle();
+    const row = unwrap(result, "find user by email");
+    return row ? mapUser(row) : null;
   },
-  async findById(id, client = pool) {
-    const rows = await queryRows(
-      client,
-      `SELECT ${selectColumns2} FROM users WHERE id = ? LIMIT 1`,
-      [id]
-    );
-    return rows[0] ? mapUser(rows[0]) : null;
+  async findById(id) {
+    const result = await supabase.from("users").select(selectColumns2).eq("id", id).maybeSingle();
+    const row = unwrap(result, "find user by id");
+    return row ? mapUser(row) : null;
   },
-  async listApprovedByRole(role, client = pool) {
-    const rows = await queryRows(
-      client,
-      `SELECT ${selectColumns2}
-         FROM users
-        WHERE role = ? AND is_approved = TRUE
-        ORDER BY name ASC, id ASC`,
-      [role]
-    );
-    return rows.map(mapUser);
+  async listApprovedByRole(role) {
+    const result = await supabase.from("users").select(selectColumns2).eq("role", role).eq("is_approved", true).order("name", { ascending: true }).order("id", { ascending: true });
+    const rows = unwrap(result, "list approved users");
+    return (rows ?? []).map(mapUser);
   },
-  async isApproved(id, client = pool) {
-    const rows = await queryRows(
-      client,
-      `SELECT ${selectColumns2} FROM users WHERE id = ? LIMIT 1`,
-      [id]
-    );
-    return rows[0]?.is_approved ?? false;
+  async isApproved(id) {
+    const result = await supabase.from("users").select("is_approved").eq("id", id).maybeSingle();
+    const row = unwrap(result, "check user approval");
+    return Boolean(row?.is_approved ?? false);
   },
-  async updateApproval(id, approved, client = pool) {
-    await executeStatement(
-      client,
-      `UPDATE users SET is_approved = ? WHERE id = ?`,
-      [approved ? 1 : 0, id]
-    );
+  async updateApproval(id, approved) {
+    const { error } = await supabase.from("users").update({ is_approved: approved }).eq("id", id);
+    assertNoError(error, "update user approval");
   },
-  async create(data, client = pool) {
+  async create(data) {
     const isApproved = data.isApproved ?? (data.role === "customer" || data.role === "admin");
-    const result = await executeStatement(
-      client,
-      `INSERT INTO users (name, email, password_hash, phone, role, is_approved)
-       VALUES (?, ?, ?, ?, ?, ?)`,
-      [
-        data.name,
-        data.email.toLowerCase(),
-        data.passwordHash,
-        data.phone,
-        data.role,
-        isApproved ? 1 : 0
-      ]
-    );
-    return Number(result.insertId);
+    const result = await supabase.from("users").insert({
+      name: data.name,
+      email: data.email.toLowerCase(),
+      password_hash: data.passwordHash,
+      phone: data.phone,
+      role: data.role,
+      is_approved: isApproved
+    }).select("id").single();
+    const row = unwrap(result, "create user");
+    return Number(row.id);
   }
 };
 
@@ -1220,54 +1176,40 @@ var orderService = {
       );
     }
     const menuItemIds = [...quantities.keys()];
-    const connection = await pool.getConnection();
-    let orderId = 0;
-    try {
-      await connection.beginTransaction();
-      const menuItems = await menuRepository.findByIds(menuItemIds, connection);
-      const menuById = new Map(menuItems.map((item) => [item.id, item]));
-      const validatedItems = [];
-      let totalAmount = 0;
-      for (const menuItemId of menuItemIds) {
-        const menuItem = menuById.get(menuItemId);
-        if (!menuItem) {
-          throw ApiError.badRequest(`\u0627\u0644\u0635\u0646\u0641 \u0631\u0642\u0645 ${menuItemId} \u063A\u064A\u0631 \u0645\u0648\u062C\u0648\u062F`);
-        }
-        if (!menuItem.isAvailable) {
-          throw ApiError.badRequest(`\u0627\u0644\u0635\u0646\u0641 "${menuItem.name}" \u063A\u064A\u0631 \u0645\u062A\u0648\u0641\u0631 \u062D\u0627\u0644\u064A\u0627\u064B`);
-        }
-        const quantity = quantities.get(menuItemId) ?? 0;
-        const lineTotal = roundMoney(menuItem.price * quantity);
-        totalAmount = roundMoney(totalAmount + lineTotal);
-        validatedItems.push({
-          menuItemId,
-          quantity,
-          price: menuItem.price
-        });
+    const menuItems = await menuRepository.findByIds(menuItemIds);
+    const menuById = new Map(menuItems.map((item) => [item.id, item]));
+    const validatedItems = [];
+    let totalAmount = 0;
+    for (const menuItemId of menuItemIds) {
+      const menuItem = menuById.get(menuItemId);
+      if (!menuItem) {
+        throw ApiError.badRequest(`\u0627\u0644\u0635\u0646\u0641 \u0631\u0642\u0645 ${menuItemId} \u063A\u064A\u0631 \u0645\u0648\u062C\u0648\u062F`);
       }
-      const paymentMethod = input.paymentMethod ?? "ONLINE";
-      orderId = await orderRepository.insertOrder(connection, {
-        userId,
-        totalAmount,
-        deliveryAddress: input.deliveryAddress,
-        paymentMethod,
-        notes: input.notes?.trim() || null
+      if (!menuItem.isAvailable) {
+        throw ApiError.badRequest(`\u0627\u0644\u0635\u0646\u0641 "${menuItem.name}" \u063A\u064A\u0631 \u0645\u062A\u0648\u0641\u0631 \u062D\u0627\u0644\u064A\u0627\u064B`);
+      }
+      const quantity = quantities.get(menuItemId) ?? 0;
+      const lineTotal = roundMoney(menuItem.price * quantity);
+      totalAmount = roundMoney(totalAmount + lineTotal);
+      validatedItems.push({
+        menuItemId,
+        quantity,
+        price: menuItem.price
       });
-      for (const item of validatedItems) {
-        await orderRepository.insertOrderItem(connection, {
-          orderId,
-          menuItemId: item.menuItemId,
-          quantity: item.quantity,
-          priceAtPurchase: item.price
-        });
-      }
-      await connection.commit();
-    } catch (error) {
-      await connection.rollback();
-      throw error;
-    } finally {
-      connection.release();
     }
+    const paymentMethod = input.paymentMethod ?? "ONLINE";
+    const orderId = await orderRepository.createWithItems({
+      userId,
+      totalAmount,
+      deliveryAddress: input.deliveryAddress,
+      paymentMethod,
+      notes: input.notes?.trim() || null,
+      items: validatedItems.map((item) => ({
+        menuItemId: item.menuItemId,
+        quantity: item.quantity,
+        priceAtPurchase: item.price
+      }))
+    });
     try {
       await paymentService.createInvoiceForOrder(orderId);
     } catch (error) {
@@ -1614,7 +1556,7 @@ var mapReservation = (row) => ({
   name: row.name,
   phone: row.phone,
   email: row.email,
-  date: row.date instanceof Date ? row.date.toISOString().slice(0, 10) : String(row.date).slice(0, 10),
+  date: String(row.date).slice(0, 10),
   time: String(row.time).slice(0, 5),
   guests: Number(row.guests),
   status: row.status,
@@ -1637,73 +1579,48 @@ var toReservationDto = (reservation) => ({
 var selectColumns3 = `id, user_id, name, phone, email, date, time, guests,
   status, notes, created_at`;
 var reservationRepository = {
-  async create(data, client = pool) {
-    const result = await executeStatement(
-      client,
-      `INSERT INTO reservations
-         (user_id, name, phone, email, date, time, guests, status, notes)
-       VALUES (?, ?, ?, ?, ?, ?, ?, 'PENDING', ?)`,
-      [
-        data.userId,
-        data.name,
-        data.phone,
-        data.email ?? null,
-        data.date,
-        data.time,
-        data.guests,
-        data.notes ?? null
-      ]
-    );
-    return Number(result.insertId);
+  async create(data) {
+    const result = await supabase.from("reservations").insert({
+      user_id: data.userId,
+      name: data.name,
+      phone: data.phone,
+      email: data.email ?? null,
+      date: data.date,
+      time: data.time,
+      guests: data.guests,
+      status: "PENDING",
+      notes: data.notes ?? null
+    }).select("id").single();
+    const row = unwrap(result, "create reservation");
+    return Number(row.id);
   },
-  async findById(id, client = pool) {
-    const rows = await queryRows(
-      client,
-      `SELECT ${selectColumns3} FROM reservations WHERE id = ? LIMIT 1`,
-      [id]
-    );
-    return rows[0] ? mapReservation(rows[0]) : null;
+  async findById(id) {
+    const result = await supabase.from("reservations").select(selectColumns3).eq("id", id).maybeSingle();
+    const row = unwrap(result, "find reservation");
+    return row ? mapReservation(row) : null;
   },
-  async list(filters, page, client = pool) {
-    const conditions = [];
-    const params = [];
+  async list(filters, page) {
+    let query2 = supabase.from("reservations").select(selectColumns3, { count: "exact" });
     if (filters.userId !== void 0) {
-      conditions.push("user_id = ?");
-      params.push(filters.userId);
+      query2 = query2.eq("user_id", filters.userId);
     }
     if (filters.status) {
-      conditions.push("status = ?");
-      params.push(filters.status);
+      query2 = query2.eq("status", filters.status);
     }
     if (filters.fromDate) {
-      conditions.push("date >= ?");
-      params.push(filters.fromDate);
+      query2 = query2.gte("date", filters.fromDate);
     }
-    const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
-    const countRows = await queryRows(
-      client,
-      `SELECT COUNT(*) AS total FROM reservations ${where}`,
-      params
-    );
-    const rows = await queryRows(
-      client,
-      `SELECT ${selectColumns3} FROM reservations ${where}
-       ORDER BY date DESC, time DESC
-       LIMIT ? OFFSET ?`,
-      [...params, page.limit, page.offset]
-    );
+    const result = await query2.order("date", { ascending: false }).order("time", { ascending: false }).range(page.offset, page.offset + page.limit - 1);
+    const rows = unwrap(result, "list reservations");
     return {
-      reservations: rows.map(mapReservation),
-      total: Number(countRows[0]?.total ?? 0)
+      reservations: (rows ?? []).map(mapReservation),
+      total: result.count ?? 0
     };
   },
-  async updateStatus(id, status, client = pool) {
-    const result = await executeStatement(
-      client,
-      "UPDATE reservations SET status = ? WHERE id = ?",
-      [status, id]
-    );
-    return result.affectedRows > 0;
+  async updateStatus(id, status) {
+    const result = await supabase.from("reservations").update({ status }).eq("id", id).select("id");
+    const rows = unwrap(result, "update reservation status");
+    return (rows?.length ?? 0) > 0;
   }
 };
 
@@ -2639,292 +2556,6 @@ var createApp = () => {
 var app = createApp();
 var index_default = app;
 
-// src/db/bootstrap.ts
-var import_promise2 = __toESM(require("mysql2/promise"));
-var ensureDatabase = async () => {
-  const databaseName = env.database.name;
-  if (!/^[A-Za-z0-9_]+$/.test(databaseName)) {
-    throw new Error("DB_NAME may only contain letters, numbers and underscores");
-  }
-  const connection = await import_promise2.default.createConnection({
-    host: env.database.host,
-    port: env.database.port,
-    user: env.database.user,
-    password: env.database.password
-  });
-  try {
-    await connection.query(
-      `CREATE DATABASE IF NOT EXISTS \`${databaseName}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`
-    );
-  } finally {
-    await connection.end();
-  }
-};
-
-// src/db/schema.ts
-var statements = [
-  `CREATE TABLE IF NOT EXISTS users (
-    id INT NOT NULL AUTO_INCREMENT,
-    name VARCHAR(255) NOT NULL,
-    email VARCHAR(255) NOT NULL,
-    password_hash VARCHAR(255) NOT NULL,
-    phone VARCHAR(20) NULL,
-    role ENUM('customer', 'admin', 'kitchen', 'cashier', 'delivery') NOT NULL DEFAULT 'customer',
-    is_approved BOOLEAN NOT NULL DEFAULT FALSE,
-    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    PRIMARY KEY (id),
-    UNIQUE KEY uq_users_email (email)
-  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
-  `CREATE TABLE IF NOT EXISTS menu_items (
-    id INT NOT NULL AUTO_INCREMENT,
-    name VARCHAR(255) NOT NULL,
-    name_en VARCHAR(255) NULL,
-    description TEXT NULL,
-    description_en TEXT NULL,
-    price DECIMAL(10, 2) NOT NULL,
-    category VARCHAR(50) NOT NULL,
-    image_url VARCHAR(500) NULL,
-    is_available BOOLEAN NOT NULL DEFAULT TRUE,
-    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    PRIMARY KEY (id),
-    KEY idx_menu_category (category),
-    KEY idx_menu_available (is_available)
-  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
-  `CREATE TABLE IF NOT EXISTS orders (
-    id INT NOT NULL AUTO_INCREMENT,
-    user_id INT NOT NULL,
-    total_amount DECIMAL(10, 2) NOT NULL,
-    delivery_address TEXT NOT NULL,
-    payment_status ENUM('PENDING', 'PAID', 'FAILED', 'REFUNDED') NOT NULL DEFAULT 'PENDING',
-    order_status ENUM('PENDING', 'PREPARING', 'READY', 'OUT_FOR_DELIVERY', 'DELIVERED', 'CANCELLED') NOT NULL DEFAULT 'PENDING',
-    payment_id VARCHAR(100) NULL,
-    payment_url VARCHAR(1000) NULL,
-    payment_method ENUM('ONLINE','CASH') NOT NULL DEFAULT 'ONLINE',
-    delivery_user_id INT NULL,
-    dispatched_at DATETIME NULL,
-    delivered_at DATETIME NULL,
-    cash_received DECIMAL(10, 2) NULL,
-    cash_change DECIMAL(10, 2) NULL,
-    notes TEXT NULL,
-    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    PRIMARY KEY (id),
-    KEY idx_orders_user (user_id),
-    KEY idx_orders_payment_status (payment_status),
-    KEY idx_orders_status (order_status),
-    KEY idx_orders_payment_id (payment_id),
-    KEY idx_orders_delivery_user (delivery_user_id),
-    KEY idx_orders_created (created_at),
-    CONSTRAINT fk_orders_user FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE,
-    CONSTRAINT fk_orders_delivery_user FOREIGN KEY (delivery_user_id) REFERENCES users (id) ON DELETE SET NULL
-  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
-  `CREATE TABLE IF NOT EXISTS order_items (
-    id INT NOT NULL AUTO_INCREMENT,
-    order_id INT NOT NULL,
-    menu_item_id INT NOT NULL,
-    quantity INT NOT NULL DEFAULT 1,
-    price_at_purchase DECIMAL(10, 2) NOT NULL,
-    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    PRIMARY KEY (id),
-    KEY idx_order_items_order (order_id),
-    KEY idx_order_items_menu (menu_item_id),
-    CONSTRAINT fk_order_items_order FOREIGN KEY (order_id) REFERENCES orders (id) ON DELETE CASCADE,
-    CONSTRAINT fk_order_items_menu FOREIGN KEY (menu_item_id) REFERENCES menu_items (id) ON DELETE RESTRICT
-  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
-  `CREATE TABLE IF NOT EXISTS reservations (
-    id INT NOT NULL AUTO_INCREMENT,
-    user_id INT NULL,
-    name VARCHAR(255) NOT NULL,
-    phone VARCHAR(20) NOT NULL,
-    email VARCHAR(255) NULL,
-    date DATE NOT NULL,
-    time TIME NOT NULL,
-    guests INT NOT NULL DEFAULT 1,
-    status ENUM('PENDING', 'CONFIRMED', 'CANCELLED', 'COMPLETED') NOT NULL DEFAULT 'PENDING',
-    notes TEXT NULL,
-    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    PRIMARY KEY (id),
-    KEY idx_reservations_date (date),
-    KEY idx_reservations_status (status),
-    KEY idx_reservations_user (user_id),
-    CONSTRAINT fk_reservations_user FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE SET NULL
-  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`
-];
-var columnMigrations = [
-  {
-    table: "users",
-    column: "is_approved",
-    definition: "BOOLEAN NOT NULL DEFAULT FALSE",
-    after: "role"
-  },
-  {
-    table: "orders",
-    column: "payment_method",
-    definition: "ENUM('ONLINE','CASH') NOT NULL DEFAULT 'ONLINE'",
-    after: "payment_url"
-  },
-  {
-    table: "orders",
-    column: "delivery_user_id",
-    definition: "INT NULL",
-    after: "payment_method"
-  },
-  {
-    table: "orders",
-    column: "dispatched_at",
-    definition: "DATETIME NULL",
-    after: "delivery_user_id"
-  },
-  {
-    table: "orders",
-    column: "delivered_at",
-    definition: "DATETIME NULL",
-    after: "dispatched_at"
-  },
-  {
-    table: "orders",
-    column: "cash_received",
-    definition: "DECIMAL(10, 2) NULL",
-    after: "delivered_at"
-  },
-  {
-    table: "orders",
-    column: "cash_change",
-    definition: "DECIMAL(10, 2) NULL",
-    after: "cash_received"
-  }
-];
-var indexMigrations = [
-  {
-    table: "orders",
-    name: "idx_orders_delivery_user",
-    columns: "`delivery_user_id`"
-  }
-];
-var foreignKeyMigrations = [
-  {
-    table: "orders",
-    name: "fk_orders_delivery_user",
-    definition: "FOREIGN KEY (`delivery_user_id`) REFERENCES `users` (`id`) ON DELETE SET NULL"
-  }
-];
-var columnExists = async (connection, table, column) => {
-  const rows = await queryRows(
-    connection,
-    `SELECT COLUMN_NAME
-       FROM information_schema.COLUMNS
-      WHERE TABLE_SCHEMA = DATABASE()
-        AND TABLE_NAME = ?
-        AND COLUMN_NAME = ?
-      LIMIT 1`,
-    [table, column]
-  );
-  return rows.length > 0;
-};
-var indexExists = async (connection, table, name) => {
-  const rows = await queryRows(
-    connection,
-    `SELECT INDEX_NAME
-       FROM information_schema.STATISTICS
-      WHERE TABLE_SCHEMA = DATABASE()
-        AND TABLE_NAME = ?
-        AND INDEX_NAME = ?
-      LIMIT 1`,
-    [table, name]
-  );
-  return rows.length > 0;
-};
-var constraintExists = async (connection, table, name) => {
-  const rows = await queryRows(
-    connection,
-    `SELECT CONSTRAINT_NAME
-       FROM information_schema.TABLE_CONSTRAINTS
-      WHERE CONSTRAINT_SCHEMA = DATABASE()
-        AND TABLE_NAME = ?
-        AND CONSTRAINT_NAME = ?
-      LIMIT 1`,
-    [table, name]
-  );
-  return rows.length > 0;
-};
-var runSchemaStatement = async (connection, sql) => {
-  try {
-    await connection.query(sql);
-    return true;
-  } catch (err) {
-    console.warn("Schema init note:", err.message);
-    return false;
-  }
-};
-var initializeSchema = async () => {
-  const connection = await pool.getConnection();
-  try {
-    for (const statement of statements) {
-      await runSchemaStatement(connection, statement);
-    }
-    for (const migration of columnMigrations) {
-      if (await columnExists(connection, migration.table, migration.column)) {
-        continue;
-      }
-      const after = migration.after ? ` AFTER \`${migration.after}\`` : "";
-      const added = await runSchemaStatement(
-        connection,
-        `ALTER TABLE \`${migration.table}\` ADD COLUMN \`${migration.column}\` ${migration.definition}${after}`
-      );
-      if (added) {
-        console.info(
-          `Schema init: added column ${migration.table}.${migration.column}`
-        );
-      }
-    }
-    for (const migration of indexMigrations) {
-      if (await indexExists(connection, migration.table, migration.name)) {
-        continue;
-      }
-      const added = await runSchemaStatement(
-        connection,
-        `ALTER TABLE \`${migration.table}\` ADD INDEX \`${migration.name}\` (${migration.columns})`
-      );
-      if (added) {
-        console.info(
-          `Schema init: added index ${migration.table}.${migration.name}`
-        );
-      }
-    }
-    for (const migration of foreignKeyMigrations) {
-      if (await constraintExists(connection, migration.table, migration.name)) {
-        continue;
-      }
-      const added = await runSchemaStatement(
-        connection,
-        `ALTER TABLE \`${migration.table}\` ADD CONSTRAINT \`${migration.name}\` ${migration.definition}`
-      );
-      if (added) {
-        console.info(
-          `Schema init: added constraint ${migration.table}.${migration.name}`
-        );
-      }
-    }
-    await runSchemaStatement(
-      connection,
-      `ALTER TABLE users MODIFY COLUMN role ENUM('admin','kitchen','cashier','delivery','customer') NOT NULL DEFAULT 'customer'`
-    );
-    await runSchemaStatement(
-      connection,
-      `ALTER TABLE orders MODIFY COLUMN order_status ENUM('PENDING','PREPARING','READY','OUT_FOR_DELIVERY','DELIVERED','CANCELLED') NOT NULL DEFAULT 'PENDING'`
-    );
-    await runSchemaStatement(
-      connection,
-      `UPDATE users SET is_approved = TRUE WHERE role IN ('admin','customer') AND is_approved = FALSE`
-    );
-  } finally {
-    connection.release();
-  }
-};
-
 // src/db/seed.ts
 var import_bcryptjs3 = __toESM(require("bcryptjs"));
 var ensureAccount = async (account) => {
@@ -2934,33 +2565,34 @@ var ensureAccount = async (account) => {
     );
   }
   const email = account.email.trim().toLowerCase();
-  const [rows] = await pool.execute(
-    "SELECT id FROM users WHERE email = ? LIMIT 1",
-    [email]
-  );
-  if (rows.length === 0) {
+  const existingResult = await supabase.from("users").select("id").eq("email", email).maybeSingle();
+  const existing = unwrap(existingResult, "find default account");
+  if (!existing) {
     const passwordHash = await import_bcryptjs3.default.hash(account.password, env.bcryptRounds);
-    await pool.execute(
-      `INSERT INTO users (name, email, password_hash, phone, role, is_approved)
-       VALUES (?, ?, ?, NULL, ?, TRUE)`,
-      [account.name, email, passwordHash, account.role]
-    );
+    const { error: error2 } = await supabase.from("users").insert({
+      name: account.name,
+      email,
+      password_hash: passwordHash,
+      phone: null,
+      role: account.role,
+      is_approved: true
+    });
+    assertNoError(error2, `create ${account.role} account`);
     return;
   }
   if (account.updateExistingPassword) {
     const passwordHash = await import_bcryptjs3.default.hash(account.password, env.bcryptRounds);
-    await pool.execute(
-      `UPDATE users
-          SET name = ?, password_hash = ?, role = ?, is_approved = TRUE
-        WHERE email = ?`,
-      [account.name, passwordHash, account.role, email]
-    );
+    const { error: error2 } = await supabase.from("users").update({
+      name: account.name,
+      password_hash: passwordHash,
+      role: account.role,
+      is_approved: true
+    }).eq("email", email);
+    assertNoError(error2, `update ${account.role} account`);
     return;
   }
-  await pool.execute(
-    "UPDATE users SET is_approved = TRUE WHERE email = ?",
-    [email]
-  );
+  const { error } = await supabase.from("users").update({ is_approved: true }).eq("email", email);
+  assertNoError(error, "approve default account");
 };
 var ensureDefaultAccounts = async () => {
   await ensureAccount({
@@ -2995,10 +2627,8 @@ var ensureDefaultAccounts = async () => {
 
 // src/server.ts
 var start = async () => {
-  await ensureDatabase();
-  await initializeSchema();
-  await ensureDefaultAccounts();
   await verifyDatabaseConnection();
+  await ensureDefaultAccounts();
   const server = index_default.listen(env.port, () => {
     console.log(
       `${brand.name} API is running on http://localhost:${env.port} (${env.nodeEnv})`
@@ -3006,9 +2636,7 @@ var start = async () => {
   });
   const shutdown = (signal) => {
     console.log(`${signal} received, shutting down gracefully...`);
-    server.close(() => {
-      void pool.end().finally(() => process.exit(0));
-    });
+    server.close(() => process.exit(0));
   };
   process.on("SIGTERM", () => shutdown("SIGTERM"));
   process.on("SIGINT", () => shutdown("SIGINT"));

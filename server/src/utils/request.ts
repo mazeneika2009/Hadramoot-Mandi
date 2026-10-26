@@ -35,3 +35,17 @@ export const paginationFromQuery = (
 
 export const escapeLike = (value: string): string =>
   value.replace(/[\\%_]/g, (character) => `\\${character}`);
+
+/**
+ * Builds a PostgREST `ilike` pattern. Commas, parentheses and double quotes
+ * are reserved by PostgREST's `or=` parser, so they are removed from the
+ * user-supplied search text before the wildcard escaping runs.
+ */
+export const toPostgrestIlikePattern = (value: string): string | null => {
+  const cleaned = value
+    .replace(/[,()"\\]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!cleaned) return null;
+  return `%${escapeLike(cleaned)}%`;
+};

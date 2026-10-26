@@ -57,19 +57,48 @@ const fawaterakApiKey = process.env.FAWATERAK_API_KEY?.trim() ?? '';
 const fawaterakWebhookSecret =
   process.env.FAWATERAK_WEBHOOK_SECRET?.trim() ?? '';
 
+// Supabase is migrating from legacy anon/service_role JWTs to publishable and
+// secret keys. Accept either naming so existing and new projects both work.
+const supabaseServiceRoleKey =
+  process.env.SUPABASE_SERVICE_ROLE_KEY?.trim() ||
+  process.env.SUPABASE_SECRET_KEY?.trim();
+
+if (!supabaseServiceRoleKey) {
+  throw new Error(
+    'Missing required environment variable: SUPABASE_SERVICE_ROLE_KEY',
+  );
+}
+
 export const env = {
   nodeEnv,
   isProduction,
   port: readNumber('PORT', 3000),
   frontendOrigins,
   primaryFrontendUrl: frontendOrigins[0] ?? 'http://localhost:5173',
-  database: {
-    host: readString('DB_HOST', 'localhost'),
-    port: readNumber('DB_PORT', 3306),
-    user: readString('DB_USER', 'root'),
-    password: process.env.DB_PASSWORD ?? '',
-    name: readString('DB_NAME', 'hadramout_mandi'),
-    connectionLimit: readNumber('DB_CONNECTION_LIMIT', 10),
+  supabase: {
+    url: readString('SUPABASE_URL'),
+    // The anon key is only needed if a browser client is added later. The API
+    // itself always talks to Supabase with the service-role key.
+    anonKey:
+      process.env.SUPABASE_ANON_KEY?.trim() ||
+      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY?.trim() ||
+      process.env.SUPABASE_PUBLISHABLE_KEY?.trim() ||
+      '',
+    serviceRoleKey: supabaseServiceRoleKey,
+  },
+  // Used only by the `db:init` migration runner, never by the API at runtime.
+  postgres: {
+    url:
+      process.env.POSTGRES_URL_NON_POOLING?.trim() ||
+      process.env.POSTGRES_URL?.trim() ||
+      process.env.DATABASE_URL?.trim() ||
+      process.env.SUPABASE_DB_URL?.trim() ||
+      '',
+    host: process.env.POSTGRES_HOST?.trim() ?? '',
+    port: readNumber('POSTGRES_PORT', 5432),
+    user: process.env.POSTGRES_USER?.trim() ?? '',
+    password: process.env.POSTGRES_PASSWORD ?? '',
+    database: process.env.POSTGRES_DATABASE?.trim() ?? 'postgres',
   },
   jwt: {
     secret: jwtSecret,

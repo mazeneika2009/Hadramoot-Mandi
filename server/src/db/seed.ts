@@ -1,8 +1,7 @@
 import bcrypt from 'bcryptjs';
-import type { RowDataPacket } from 'mysql2/promise';
-import { pool } from './pool';
 import { env } from '../config/env';
-import { initializeSchema } from './schema';
+import { supabase } from './client';
+import { assertNoError, unwrap } from './query';
 
 interface MenuSeed {
   name: string;
@@ -173,37 +172,50 @@ const ensureAccount = async (account: DefaultAccount): Promise<void> => {
   }
 
   const email = account.email.trim().toLowerCase();
-  const [rows] = await pool.execute<RowDataPacket[]>(
-    'SELECT id FROM users WHERE email = ? LIMIT 1',
-    [email],
-  );
+  const existingResult = await supabase
+    .from('users')
+    .select('id')
+    .eq('email', email)
+    .maybeSingle();
 
-  if (rows.length === 0) {
+  const existing = unwrap(existingResult, 'find default account') as {
+    id: number;
+  } | null;
+
+  if (!existing) {
     const passwordHash = await bcrypt.hash(account.password, env.bcryptRounds);
-    await pool.execute(
-      `INSERT INTO users (name, email, password_hash, phone, role, is_approved)
-       VALUES (?, ?, ?, NULL, ?, TRUE)`,
-      [account.name, email, passwordHash, account.role],
-    );
+    const { error } = await supabase.from('users').insert({
+      name: account.name,
+      email,
+      password_hash: passwordHash,
+      phone: null,
+      role: account.role,
+      is_approved: true,
+    });
+    assertNoError(error, `create ${account.role} account`);
     return;
   }
 
   if (account.updateExistingPassword) {
     const passwordHash = await bcrypt.hash(account.password, env.bcryptRounds);
-    await pool.execute(
-      `UPDATE users
-          SET name = ?, password_hash = ?, role = ?, is_approved = TRUE
-        WHERE email = ?`,
-      [account.name, passwordHash, account.role, email],
-    );
+    const { error } = await supabase
+      .from('users')
+      .update({
+        name: account.name,
+        password_hash: passwordHash,
+        role: account.role,
+        is_approved: true,
+      })
+      .eq('email', email);
+    assertNoError(error, `update ${account.role} account`);
     return;
   }
 
-  // Existing installations may predate the is_approved column.
-  await pool.execute(
-    'UPDATE users SET is_approved = TRUE WHERE email = ?',
-    [email],
-  );
+  const { error } = await supabase
+    .from('users')
+    .update({ is_approved: true })
+    .eq('email', email);
+  assertNoError(error, 'approve default account');
 };
 
 /**
@@ -245,32 +257,31 @@ export const ensureDefaultAccounts = async (): Promise<void> => {
 export const seedDatabase = async (): Promise<void> => {
   await ensureDefaultAccounts();
 
-  const [menuCountRows] = await pool.execute<RowDataPacket[]>(
-    'SELECT COUNT(*) AS total FROM menu_items',
-  );
-  const menuCount = Number(menuCountRows[0]?.total ?? 0);
+  const menuCountResult = await supabase
+    .from('menu_items')
+    .select('id', { count: 'exact', head: true });
+  assertNoError(menuCountResult.error, 'count menu items before seeding');
 
-  if (menuCount === 0) {
-    for (const item of menuSeed) {
-      await pool.execute(
-        `INSERT INTO menu_items
-           (name, name_en, description, description_en, price, category, image_url, is_available)
-         VALUES (?, ?, ?, ?, ?, ?, ?, TRUE)`,
-        [
-          item.name,
-          item.nameEn,
-          item.description,
-          item.descriptionEn,
-          item.price,
-          item.category,
-          item.imageUrl,
-        ],
-      );
-    }
+  if ((menuCountResult.count ?? 0) > 0) {
+    return;
   }
+
+  const { error } = await supabase.from('menu_items').insert(
+    menuSeed.map((item) => ({
+      name: item.name,
+      name_en: item.nameEn,
+      description: item.description,
+      description_en: item.descriptionEn,
+      price: item.price,
+      category: item.category,
+      image_url: item.imageUrl,
+      is_available: true,
+    })),
+  );
+
+  assertNoError(error, 'seed menu items');
 };
 
 export const runSeed = async (): Promise<void> => {
-  await initializeSchema();
   await seedDatabase();
 };

@@ -1,4 +1,3 @@
-import type { RowDataPacket } from 'mysql2/promise';
 import type {
   AdminStats,
   OrderDto,
@@ -6,17 +5,33 @@ import type {
   OrderStatus,
   PaymentStatus,
 } from '../../../shared/api';
-import { pool } from '../db/pool';
-import { executeStatement, queryRows, type DbClient } from '../db/query';
+import { supabase } from '../db/client';
+import { assertNoError, unwrap } from '../db/query';
 import type { OrderItemRecord, OrderRecord } from '../types/domain';
 import { toIsoString, toNullableIsoString, toNumber } from '../utils/sanitize';
 
-interface OrderRow extends RowDataPacket {
+type PaymentMethod = 'ONLINE' | 'CASH';
+
+interface EmbeddedCustomer {
+  name: string;
+  email: string;
+  phone: string | null;
+}
+
+interface EmbeddedDeliveryUser {
+  name: string;
+  phone: string | null;
+}
+
+interface EmbeddedMenuItem {
+  name: string;
+  name_en: string | null;
+  image_url: string | null;
+}
+
+interface OrderRow {
   id: number;
   user_id: number;
-  customer_name?: string;
-  customer_email?: string;
-  customer_phone?: string | null;
   total_amount: string | number;
   delivery_address: string;
   payment_status: PaymentStatus;
@@ -24,66 +39,89 @@ interface OrderRow extends RowDataPacket {
   payment_id: string | null;
   payment_url: string | null;
   notes: string | null;
-  payment_method: 'ONLINE' | 'CASH';
+  payment_method: PaymentMethod;
   delivery_user_id: number | null;
-  delivery_user_name?: string | null;
-  delivery_user_phone?: string | null;
-  dispatched_at: Date | string | null;
-  delivered_at: Date | string | null;
+  dispatched_at: string | null;
+  delivered_at: string | null;
   cash_received: string | number | null;
   cash_change: string | number | null;
-  created_at: Date | string;
-  updated_at: Date | string;
+  created_at: string;
+  updated_at: string;
+  customer: EmbeddedCustomer | EmbeddedCustomer[] | null;
+  delivery: EmbeddedDeliveryUser | EmbeddedDeliveryUser[] | null;
 }
 
-interface OrderItemRow extends RowDataPacket {
+interface OrderItemRow {
   id: number;
   order_id: number;
   menu_item_id: number;
-  name: string;
-  name_en: string | null;
-  image_url: string | null;
   quantity: number;
   price_at_purchase: string | number;
+  menu_item: EmbeddedMenuItem | EmbeddedMenuItem[] | null;
 }
 
-const mapOrder = (row: OrderRow): OrderRecord => ({
-  id: Number(row.id),
-  userId: Number(row.user_id),
-  customerName: row.customer_name,
-  customerEmail: row.customer_email,
-  customerPhone: row.customer_phone,
-  totalAmount: toNumber(row.total_amount),
-  deliveryAddress: row.delivery_address,
-  paymentStatus: row.payment_status,
-  orderStatus: row.order_status,
-  paymentId: row.payment_id,
-  paymentUrl: row.payment_url,
-  notes: row.notes,
-  paymentMethod: row.payment_method,
-  deliveryUserId:
-    row.delivery_user_id === null ? null : Number(row.delivery_user_id),
-  deliveryUserName: row.delivery_user_name ?? null,
-  deliveryUserPhone: row.delivery_user_phone ?? null,
-  dispatchedAt: toNullableIsoString(row.dispatched_at),
-  deliveredAt: toNullableIsoString(row.delivered_at),
-  cashReceived:
-    row.cash_received === null ? null : toNumber(row.cash_received),
-  cashChange: row.cash_change === null ? null : toNumber(row.cash_change),
-  createdAt: toIsoString(row.created_at),
-  updatedAt: toIsoString(row.updated_at),
-});
+interface OrderStatsRow {
+  total_orders: number;
+  pending_orders: number;
+  preparing_orders: number;
+  out_for_delivery_orders: number;
+  delivered_orders: number;
+  cancelled_orders: number;
+  total_revenue: string | number;
+}
 
-const mapOrderItem = (row: OrderItemRow): OrderItemRecord => ({
-  id: Number(row.id),
-  orderId: Number(row.order_id),
-  menuItemId: Number(row.menu_item_id),
-  name: row.name,
-  nameEn: row.name_en,
-  imageUrl: row.image_url,
-  quantity: Number(row.quantity),
-  priceAtPurchase: toNumber(row.price_at_purchase),
-});
+/** Normalises a PostgREST many-to-one relation to a single object. */
+const relation = <T>(value: T | T[] | null | undefined): T | null => {
+  if (Array.isArray(value)) return value[0] ?? null;
+  return value ?? null;
+};
+
+const mapOrder = (row: OrderRow): OrderRecord => {
+  const customer = relation(row.customer);
+  const delivery = relation(row.delivery);
+
+  return {
+    id: Number(row.id),
+    userId: Number(row.user_id),
+    customerName: customer?.name,
+    customerEmail: customer?.email,
+    customerPhone: customer?.phone ?? null,
+    totalAmount: toNumber(row.total_amount),
+    deliveryAddress: row.delivery_address,
+    paymentStatus: row.payment_status,
+    orderStatus: row.order_status,
+    paymentId: row.payment_id,
+    paymentUrl: row.payment_url,
+    notes: row.notes,
+    paymentMethod: row.payment_method,
+    deliveryUserId:
+      row.delivery_user_id === null ? null : Number(row.delivery_user_id),
+    deliveryUserName: delivery?.name ?? null,
+    deliveryUserPhone: delivery?.phone ?? null,
+    dispatchedAt: toNullableIsoString(row.dispatched_at),
+    deliveredAt: toNullableIsoString(row.delivered_at),
+    cashReceived:
+      row.cash_received === null ? null : toNumber(row.cash_received),
+    cashChange: row.cash_change === null ? null : toNumber(row.cash_change),
+    createdAt: toIsoString(row.created_at),
+    updatedAt: toIsoString(row.updated_at),
+  };
+};
+
+const mapOrderItem = (row: OrderItemRow): OrderItemRecord => {
+  const menuItem = relation(row.menu_item);
+
+  return {
+    id: Number(row.id),
+    orderId: Number(row.order_id),
+    menuItemId: Number(row.menu_item_id),
+    name: menuItem?.name ?? '',
+    nameEn: menuItem?.name_en ?? null,
+    imageUrl: menuItem?.image_url ?? null,
+    quantity: Number(row.quantity),
+    priceAtPurchase: toNumber(row.price_at_purchase),
+  };
+};
 
 export const toOrderItemDto = (item: OrderItemRecord): OrderItemDto => ({
   id: item.id,
@@ -125,22 +163,17 @@ export const toOrderDto = (
   cashChange: order.cashChange,
 });
 
-const orderSelect = `o.id, o.user_id, o.total_amount, o.delivery_address,
-  o.payment_status, o.order_status, o.payment_id, o.payment_url, o.notes,
-  o.payment_method, o.delivery_user_id, o.dispatched_at, o.delivered_at,
-  o.cash_received, o.cash_change, o.created_at, o.updated_at`;
+// Explicit foreign-key hints keep PostgREST from confusing the two users
+// relationships on the orders table.
+const orderSelect = `id, user_id, total_amount, delivery_address,
+  payment_status, order_status, payment_id, payment_url, notes,
+  payment_method, delivery_user_id, dispatched_at, delivered_at,
+  cash_received, cash_change, created_at, updated_at,
+  customer:users!orders_user_id_fkey(name, email, phone),
+  delivery:users!orders_delivery_user_id_fkey(name, phone)`;
 
-const customerSelect = `u.name AS customer_name, u.email AS customer_email,
-  u.phone AS customer_phone`;
-
-const deliverySelect = `d.name AS delivery_user_name,
-  d.phone AS delivery_user_phone`;
-
-const orderJoins = `JOIN users u ON u.id = o.user_id
-  LEFT JOIN users d ON d.id = o.delivery_user_id`;
-
-const itemSelect = `oi.id, oi.order_id, oi.menu_item_id, oi.quantity,
-  oi.price_at_purchase, mi.name, mi.name_en, mi.image_url`;
+const itemSelect = `id, order_id, menu_item_id, quantity, price_at_purchase,
+  menu_item:menu_items!order_items_menu_item_id_fkey(name, name_en, image_url)`;
 
 export interface OrderListFilters {
   userId?: number;
@@ -154,198 +187,157 @@ export interface PageOptions {
   offset: number;
 }
 
+export interface CreateOrderItemRecord {
+  menuItemId: number;
+  quantity: number;
+  priceAtPurchase: number;
+}
+
 export const orderRepository = {
-  async findById(
-    id: number,
-    client: DbClient = pool,
-  ): Promise<OrderRecord | null> {
-    const rows = await queryRows<OrderRow>(
-      client,
-      `SELECT ${orderSelect}, ${customerSelect}, ${deliverySelect}
-       FROM orders o ${orderJoins}
-       WHERE o.id = ? LIMIT 1`,
-      [id],
-    );
-    return rows[0] ? mapOrder(rows[0]) : null;
+  async findById(id: number): Promise<OrderRecord | null> {
+    const result = await supabase
+      .from('orders')
+      .select(orderSelect)
+      .eq('id', id)
+      .maybeSingle();
+
+    const row = unwrap(result, 'find order') as OrderRow | null;
+    return row ? mapOrder(row) : null;
   },
 
-  async findByPaymentId(
-    paymentId: string,
-    client: DbClient = pool,
-  ): Promise<OrderRecord | null> {
-    const rows = await queryRows<OrderRow>(
-      client,
-      `SELECT ${orderSelect}, ${customerSelect}, ${deliverySelect}
-       FROM orders o ${orderJoins}
-       WHERE o.payment_id = ? LIMIT 1`,
-      [paymentId],
-    );
-    return rows[0] ? mapOrder(rows[0]) : null;
+  async findByPaymentId(paymentId: string): Promise<OrderRecord | null> {
+    const result = await supabase
+      .from('orders')
+      .select(orderSelect)
+      .eq('payment_id', paymentId)
+      .order('id', { ascending: true })
+      .limit(1)
+      .maybeSingle();
+
+    const row = unwrap(result, 'find order by payment id') as OrderRow | null;
+    return row ? mapOrder(row) : null;
   },
 
   async list(
     filters: OrderListFilters,
     page: PageOptions,
-    client: DbClient = pool,
   ): Promise<{ orders: OrderRecord[]; total: number }> {
-    const conditions: string[] = [];
-    const params: unknown[] = [];
+    let query = supabase.from('orders').select(orderSelect, { count: 'exact' });
 
     if (filters.userId !== undefined) {
-      conditions.push('o.user_id = ?');
-      params.push(filters.userId);
+      query = query.eq('user_id', filters.userId);
     }
     if (filters.deliveryUserId !== undefined) {
-      conditions.push('o.delivery_user_id = ?');
-      params.push(filters.deliveryUserId);
+      query = query.eq('delivery_user_id', filters.deliveryUserId);
     }
     if (filters.status) {
-      if (Array.isArray(filters.status)) {
-        const placeholders = filters.status.map(() => '?').join(', ');
-        conditions.push(`o.order_status IN (${placeholders})`);
-        params.push(...filters.status);
-      } else {
-        conditions.push('o.order_status = ?');
-        params.push(filters.status);
-      }
+      query = Array.isArray(filters.status)
+        ? query.in('order_status', filters.status)
+        : query.eq('order_status', filters.status);
     }
     if (filters.paymentStatus) {
-      conditions.push('o.payment_status = ?');
-      params.push(filters.paymentStatus);
+      query = query.eq('payment_status', filters.paymentStatus);
     }
 
-    const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
-    const countRows = await queryRows<RowDataPacket & { total: number }>(
-      client,
-      `SELECT COUNT(*) AS total FROM orders o ${where}`,
-      params,
-    );
+    const result = await query
+      .order('created_at', { ascending: false })
+      .range(page.offset, page.offset + page.limit - 1);
 
-    const rows = await queryRows<OrderRow>(
-      client,
-      `SELECT ${orderSelect}, ${customerSelect}, ${deliverySelect}
-       FROM orders o ${orderJoins}
-       ${where}
-       ORDER BY o.created_at DESC
-       LIMIT ? OFFSET ?`,
-      [...params, page.limit, page.offset],
-    );
+    const rows = unwrap(result, 'list orders') as OrderRow[] | null;
 
     return {
-      orders: rows.map(mapOrder),
-      total: Number(countRows[0]?.total ?? 0),
+      orders: (rows ?? []).map(mapOrder),
+      total: result.count ?? 0,
     };
   },
 
   async findItemsByOrderIds(
     orderIds: readonly number[],
-    client: DbClient = pool,
   ): Promise<OrderItemRecord[]> {
     if (orderIds.length === 0) return [];
-    const placeholders = orderIds.map(() => '?').join(', ');
-    const rows = await queryRows<OrderItemRow>(
-      client,
-      `SELECT ${itemSelect}
-       FROM order_items oi JOIN menu_items mi ON mi.id = oi.menu_item_id
-       WHERE oi.order_id IN (${placeholders})
-       ORDER BY oi.id`,
-      orderIds,
-    );
-    return rows.map(mapOrderItem);
+
+    const result = await supabase
+      .from('order_items')
+      .select(itemSelect)
+      .in('order_id', [...orderIds])
+      .order('id', { ascending: true });
+
+    const rows = unwrap(result, 'find order items') as OrderItemRow[] | null;
+    return (rows ?? []).map(mapOrderItem);
   },
 
-  async findItemsByOrderId(
-    orderId: number,
-    client: DbClient = pool,
-  ): Promise<OrderItemRecord[]> {
-    return this.findItemsByOrderIds([orderId], client);
+  async findItemsByOrderId(orderId: number): Promise<OrderItemRecord[]> {
+    return orderRepository.findItemsByOrderIds([orderId]);
   },
 
-  async insertOrder(
-    client: DbClient,
-    data: {
-      userId: number;
-      totalAmount: number;
-      deliveryAddress: string;
-      paymentMethod: 'ONLINE' | 'CASH';
-      notes: string | null;
-    },
-  ): Promise<number> {
-    const result = await executeStatement(
-      client,
-      `INSERT INTO orders
-         (user_id, total_amount, delivery_address, payment_status, order_status, payment_method, notes)
-       VALUES (?, ?, ?, 'PENDING', 'PENDING', ?, ?)`,
-      [
-        data.userId,
-        data.totalAmount,
-        data.deliveryAddress,
-        data.paymentMethod,
-        data.notes,
-      ],
-    );
-    return Number(result.insertId);
-  },
+  /**
+   * Creates the order and its items in a single PostgreSQL transaction via the
+   * `create_order_with_items` RPC defined in the Supabase migration.
+   */
+  async createWithItems(data: {
+    userId: number;
+    totalAmount: number;
+    deliveryAddress: string;
+    paymentMethod: PaymentMethod;
+    notes: string | null;
+    items: readonly CreateOrderItemRecord[];
+  }): Promise<number> {
+    const result = await supabase.rpc('create_order_with_items', {
+      p_user_id: data.userId,
+      p_total_amount: data.totalAmount,
+      p_delivery_address: data.deliveryAddress,
+      p_payment_method: data.paymentMethod,
+      p_notes: data.notes,
+      p_items: data.items.map((item) => ({
+        menu_item_id: item.menuItemId,
+        quantity: item.quantity,
+        price_at_purchase: item.priceAtPurchase,
+      })),
+    });
 
-  async insertOrderItem(
-    client: DbClient,
-    data: {
-      orderId: number;
-      menuItemId: number;
-      quantity: number;
-      priceAtPurchase: number;
-    },
-  ): Promise<void> {
-    await executeStatement(
-      client,
-      `INSERT INTO order_items
-         (order_id, menu_item_id, quantity, price_at_purchase)
-       VALUES (?, ?, ?, ?)`,
-      [
-        data.orderId,
-        data.menuItemId,
-        data.quantity,
-        data.priceAtPurchase,
-      ],
-    );
+    assertNoError(result.error, 'create order');
+    return Number(result.data);
   },
 
   async updatePaymentInfo(
     orderId: number,
     paymentId: string | null,
     paymentUrl: string | null,
-    client: DbClient = pool,
   ): Promise<void> {
-    await executeStatement(
-      client,
-      `UPDATE orders SET payment_id = ?, payment_url = ? WHERE id = ?`,
-      [paymentId, paymentUrl, orderId],
-    );
+    const { error } = await supabase
+      .from('orders')
+      .update({ payment_id: paymentId, payment_url: paymentUrl })
+      .eq('id', orderId);
+
+    assertNoError(error, 'update order payment info');
   },
 
   async updateStatuses(
     orderId: number,
     paymentStatus: PaymentStatus,
     orderStatus: OrderStatus,
-    client: DbClient = pool,
   ): Promise<void> {
-    await executeStatement(
-      client,
-      `UPDATE orders SET payment_status = ?, order_status = ? WHERE id = ?`,
-      [paymentStatus, orderStatus, orderId],
-    );
+    const { error } = await supabase
+      .from('orders')
+      .update({
+        payment_status: paymentStatus,
+        order_status: orderStatus,
+      })
+      .eq('id', orderId);
+
+    assertNoError(error, 'update order statuses');
   },
 
   async updateOrderStatus(
     orderId: number,
     orderStatus: OrderStatus,
-    client: DbClient = pool,
   ): Promise<void> {
-    await executeStatement(
-      client,
-      'UPDATE orders SET order_status = ? WHERE id = ?',
-      [orderStatus, orderId],
-    );
+    const { error } = await supabase
+      .from('orders')
+      .update({ order_status: orderStatus })
+      .eq('id', orderId);
+
+    assertNoError(error, 'update order status');
   },
 
   /**
@@ -356,21 +348,23 @@ export const orderRepository = {
   async dispatchToDriver(
     orderId: number,
     deliveryUserId: number,
-    client: DbClient = pool,
   ): Promise<boolean> {
-    const result = await executeStatement(
-      client,
-      `UPDATE orders
-          SET delivery_user_id = ?,
-              order_status = 'OUT_FOR_DELIVERY',
-              dispatched_at = NOW(),
-              delivered_at = NULL,
-              cash_received = NULL,
-              cash_change = NULL
-        WHERE id = ? AND order_status = 'READY'`,
-      [deliveryUserId, orderId],
-    );
-    return result.affectedRows > 0;
+    const result = await supabase
+      .from('orders')
+      .update({
+        delivery_user_id: deliveryUserId,
+        order_status: 'OUT_FOR_DELIVERY',
+        dispatched_at: new Date().toISOString(),
+        delivered_at: null,
+        cash_received: null,
+        cash_change: null,
+      })
+      .eq('id', orderId)
+      .eq('order_status', 'READY')
+      .select('id');
+
+    const rows = unwrap(result, 'dispatch order') as { id: number }[] | null;
+    return (rows?.length ?? 0) > 0;
   },
 
   /**
@@ -382,56 +376,40 @@ export const orderRepository = {
     orderId: number,
     cashReceived: number | null,
     cashChange: number | null,
-    client: DbClient = pool,
   ): Promise<boolean> {
-    const result = await executeStatement(
-      client,
-      `UPDATE orders
-          SET order_status = 'DELIVERED',
-              payment_status = 'PAID',
-              delivered_at = NOW(),
-              cash_received = ?,
-              cash_change = ?
-        WHERE id = ? AND order_status = 'OUT_FOR_DELIVERY'`,
-      [cashReceived, cashChange, orderId],
-    );
-    return result.affectedRows > 0;
+    const result = await supabase
+      .from('orders')
+      .update({
+        order_status: 'DELIVERED',
+        payment_status: 'PAID',
+        delivered_at: new Date().toISOString(),
+        cash_received: cashReceived,
+        cash_change: cashChange,
+      })
+      .eq('id', orderId)
+      .eq('order_status', 'OUT_FOR_DELIVERY')
+      .select('id');
+
+    const rows = unwrap(result, 'complete delivery') as
+      | { id: number }[]
+      | null;
+    return (rows?.length ?? 0) > 0;
   },
 
-  async getStats(client: DbClient = pool): Promise<AdminStats> {
-    const rows = await queryRows<
-      RowDataPacket & {
-        total_orders: number;
-        pending_orders: number;
-        preparing_orders: number;
-        out_for_delivery_orders: number;
-        delivered_orders: number;
-        cancelled_orders: number;
-        total_revenue: string | number;
-      }
-    >(
-      client,
-      `SELECT
-         COUNT(*) AS total_orders,
-         SUM(order_status = 'PENDING') AS pending_orders,
-         SUM(order_status = 'PREPARING') AS preparing_orders,
-         SUM(order_status = 'OUT_FOR_DELIVERY') AS out_for_delivery_orders,
-         SUM(order_status = 'DELIVERED') AS delivered_orders,
-         SUM(order_status = 'CANCELLED') AS cancelled_orders,
-         COALESCE(SUM(CASE WHEN payment_status = 'PAID' THEN total_amount ELSE 0 END), 0) AS total_revenue
-       FROM orders`,
-    );
+  async getStats(): Promise<AdminStats> {
+    const [statsResult, menuResult, reservationResult] = await Promise.all([
+      supabase.rpc('get_order_stats'),
+      supabase.from('menu_items').select('id', { count: 'exact', head: true }),
+      supabase.from('reservations').select('id', { count: 'exact', head: true }),
+    ]);
 
-    const menuRows = await queryRows<RowDataPacket & { total: number }>(
-      client,
-      'SELECT COUNT(*) AS total FROM menu_items',
-    );
-    const reservationRows = await queryRows<RowDataPacket & { total: number }>(
-      client,
-      'SELECT COUNT(*) AS total FROM reservations',
-    );
+    assertNoError(statsResult.error, 'load order statistics');
+    assertNoError(menuResult.error, 'count menu items');
+    assertNoError(reservationResult.error, 'count reservations');
 
-    const row = rows[0];
+    const rows = statsResult.data as OrderStatsRow[] | null;
+    const row = rows?.[0];
+
     return {
       totalOrders: Number(row?.total_orders ?? 0),
       pendingOrders: Number(row?.pending_orders ?? 0),
@@ -440,8 +418,8 @@ export const orderRepository = {
       deliveredOrders: Number(row?.delivered_orders ?? 0),
       cancelledOrders: Number(row?.cancelled_orders ?? 0),
       totalRevenue: toNumber(row?.total_revenue),
-      totalMenuItems: Number(menuRows[0]?.total ?? 0),
-      totalReservations: Number(reservationRows[0]?.total ?? 0),
+      totalMenuItems: menuResult.count ?? 0,
+      totalReservations: reservationResult.count ?? 0,
     };
   },
 };
